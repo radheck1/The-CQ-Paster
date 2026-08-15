@@ -115,6 +115,7 @@ Implement macOS versions of the functions `hook.rs` calls:
 pub fn snapshot() -> Result<ClipSnapshot, String>
 pub fn restore(snap: &ClipSnapshot) -> Result<(), String>
 pub fn is_sensitive() -> bool
+pub fn sequence_number() -> u32   // see §6.10 — map to NSPasteboard.changeCount
 pub fn init_thread()          // may be a no-op on macOS
 pub fn text_only(snap) -> Option<ClipSnapshot>   // already shared; may need mac UTI awareness
 ```
@@ -280,13 +281,18 @@ setting N formats left only the last one. Fix was to empty once, then use
 `clearContents()` must be called **exactly once**, then `setData:forType:` for
 each type. Calling `declareTypes:` repeatedly will wipe earlier types.
 
-### 6.5 Don't snapshot the live clipboard right before pasting
+### 6.5 Don't snapshot the live clipboard right before **pasting**
 
-An earlier version snapshotted the current clipboard before loading a slot, to
-restore it afterwards. This **woke the source app's asynchronous/lazy pasteboard
-provider**, which then re-asserted the clipboard and clobbered what we set.
-The feature was removed. macOS has lazy pasteboard providers too
+An earlier version snapshotted the current clipboard immediately before loading a
+slot to paste it, intending to restore it afterwards. This **woke the source
+app's asynchronous/lazy pasteboard provider**, which then re-asserted the
+clipboard and clobbered what we had just set. That is a direct cause of the long
+file-paste bug. The paste path therefore does **not** snapshot first, and must
+not be "improved" to do so. macOS has lazy pasteboard providers too
 (`NSPasteboardItemDataProvider`) — expect the same class of bug.
+
+**This applies to the paste path only.** The *copy* path deliberately does
+snapshot beforehand — see §6.11, which has a guard that makes it safe.
 
 ### 6.6 File pastes must be a copy, not a move
 
@@ -312,6 +318,72 @@ releases Shift before injecting so the target receives a clean `Cmd/Ctrl+V`, not
 Plain-text paste appeared broken in Google Docs. Diagnostics proved the stripping
 worked correctly — **Google Docs applies destination formatting** to plain-pasted
 text. Verify with a neutral target (TextEdit in plain-text mode) before chasing.
+
+### 6.10 Never sleep a fixed guess waiting for a copy to land
+
+When the chord fires, the `C` is passed **through** to the foreground app, which
+then writes the clipboard **asynchronously**. So after passing it through, the
+worker has to wait before reading — otherwise it captures the *previous*
+clipboard contents and silently stores the wrong thing in the slot.
+
+The original Windows implementation slept a flat 120ms. That is a guess, and it
+fails silently in one direction: any app slower than the guess (large selection,
+many files) gets the wrong content captured with no error. **It has since been
+replaced** with an event-driven wait, and macOS must do the same.
+
+The Windows version now uses `GetClipboardSequenceNumber()`. **The macOS
+analogue is `NSPasteboard.general.changeCount`** — same idea, an integer that
+increments on every pasteboard change, readable without taking the pasteboard.
+
+The algorithm (see `hook.rs::wait_for_clipboard`), worth copying exactly:
+
+1. Sample the counter **in the hook callback**, before the copy can land, and
+   send it along with the action. Sampling it in the worker races the copy.
+   A bare counter read is cheap enough to be the one exception to §6.1 — it
+   takes no lock and only runs on an actual chord, not on every keystroke.
+2. **Phase 1** — poll every 5ms until the counter differs from the baseline.
+   If it never does before a ~600ms deadline, **nothing was copied** (no
+   selection, or an app that ignores `Cmd+C`): return false and leave the slot
+   untouched rather than storing stale clipboard content.
+3. **Phase 2** — an app publishing several types bumps the counter **once per
+   type**, so "changed" is not "finished". Keep polling until it holds still for
+   ~40ms, then read. Without this you snapshot mid-write and capture only some
+   of the types.
+
+Note the two deadlines protect different things, and the worker is serial: an
+over-long deadline stalls a subsequent paste, so don't inflate it casually.
+
+### 6.11 A slot copy is a stash: preserve the user's clipboard
+
+`Cmd/Ctrl + <N> + C` must fill slot N **without disturbing what a plain
+`Cmd/Ctrl + V` pastes**. Since the chord works by passing the `C` through so the
+app performs a real copy, the app necessarily overwrites the system clipboard —
+so the previous contents have to be captured and put back.
+
+Implemented in `hook.rs` as `capture_previous()` + a restore after the slot is
+filled. The ordering is:
+
+1. Capture the clipboard **before** the copy lands
+2. Wait for the copy and store it into the slot (§6.10)
+3. Restore the captured clipboard
+
+**The guard is the whole trick.** If you capture *after* the app's copy has
+already landed, you will "restore" the very thing you just stashed and silently
+undo the user's copy. So the capture is only trusted when the sequence
+number / `changeCount` still equals the baseline **both before and after** the
+read. If it moved at any point, discard the capture and leave the clipboard
+alone — degrade to not preserving rather than doing something wrong. The same
+check also throws away a snapshot that is internally inconsistent (some formats
+captured before the app's write, some after).
+
+Also skip the capture entirely when the previous clipboard `is_sensitive()` —
+never re-publish password-manager content that was flagged not to be kept.
+
+**Known risk, accepted by the user:** this briefly holds the clipboard open
+right as the source app wants to write to it, so a source app that doesn't retry
+its open could lose the race and fail its copy. Verified working on Windows with
+Explorer multi-file copies, which is the worst case. If macOS shows flaky or
+empty slots after this, that race is the first suspect.
 
 ---
 
@@ -409,6 +481,10 @@ Verify each on macOS. Windows passes all of these.
 - [ ] **Files in Finder** — copy files, paste elsewhere; must be a **copy**
 - [ ] Multiple files at once
 - [ ] Password manager content is **skipped** (`org.nspasteboard.ConcealedType`)
+- [ ] A **slow/large** copy (big spreadsheet range, many files) captures the new
+      content — not the previous clipboard contents (see §6.10)
+- [ ] A chord fired with **nothing selected** leaves the slot untouched rather
+      than overwriting it with stale clipboard content
 
 **Folders**
 - [ ] Slots are independent per folder

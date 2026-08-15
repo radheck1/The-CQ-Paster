@@ -118,6 +118,18 @@ pub fn text_only(snap: &ClipSnapshot) -> Option<ClipSnapshot> {
 /// True if the current clipboard is flagged by its owner as sensitive /
 /// not-for-history (password managers, banking apps, etc.). We must not store
 /// such content in a slot.
+/// The clipboard's change counter, which the system bumps on every clipboard
+/// update.
+///
+/// Reading it neither opens nor locks the clipboard, so it is safe to call
+/// while another process is mid-write — and cheap enough to call from the
+/// keyboard hook callback.
+#[cfg(windows)]
+pub fn sequence_number() -> u32 {
+    use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
+    unsafe { GetClipboardSequenceNumber() }
+}
+
 #[cfg(windows)]
 pub fn is_sensitive() -> bool {
     use clipboard_win::{raw, Clipboard, EnumFormats};

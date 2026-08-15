@@ -25,16 +25,23 @@ mod windows_impl {
     use std::sync::mpsc::{self, Sender};
     use std::sync::Arc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use tauri::{AppHandle, Emitter, Manager};
 
     use crate::clipboard;
     use crate::{AppState, Mode};
 
-    /// How long to wait after letting `Ctrl+C` through before reading the
-    /// clipboard, so the foreground app has finished populating it.
-    const COPY_SETTLE_MS: u64 = 120;
+    /// Longest we wait for the foreground app to finish writing the clipboard
+    /// after passing `Ctrl+C` through. Apps populate it asynchronously, and a
+    /// large selection or a many-file copy takes far longer than it looks.
+    const COPY_WAIT_MS: u64 = 600;
+    /// Once the clipboard starts changing, how long it must hold still before we
+    /// read it. Apps publish formats one at a time and each one bumps the
+    /// sequence number, so "changed" is not the same as "finished".
+    const COPY_QUIET_MS: u64 = 40;
+    /// Polling granularity while watching the sequence number.
+    const COPY_POLL_MS: u64 = 5;
     /// How long to leave the "injecting" guard up so our synthetic keystrokes
     /// pass through the hook untouched.
     const INJECT_GUARD_MS: u64 = 40;
@@ -44,8 +51,10 @@ mod windows_impl {
     enum Action {
         /// Ctrl+digit pressed: show the reference popup (Noob mode).
         Peek(i32, i32),
-        /// Ctrl+<N>+C: copy current selection into slot N.
-        Copy(usize),
+        /// Ctrl+<N>+C: copy current selection into slot N. Carries the clipboard
+        /// sequence number from *before* the copy, so the worker can tell when
+        /// the app has actually written rather than guessing with a sleep.
+        Copy(usize, u32),
         /// Ctrl+<N>+V: paste slot N. `plain` (Shift held) strips formatting.
         Paste(usize, bool),
     }
@@ -110,7 +119,12 @@ mod windows_impl {
                     Key::KeyC => {
                         let slot = pending_slot.load(Ordering::SeqCst);
                         if slot != 0 {
-                            let _ = tx.send(Action::Copy(slot));
+                            // Sample the clipboard counter *before* the copy
+                            // lands. This is a bare counter read — no clipboard
+                            // open, no lock — and only runs on an actual chord,
+                            // so it respects the keep-this-callback-fast rule.
+                            let seq = clipboard::sequence_number();
+                            let _ = tx.send(Action::Copy(slot, seq));
                         }
                         return Some(event); // let Ctrl+C perform the real copy
                     }
@@ -148,26 +162,45 @@ mod windows_impl {
                 Action::Peek(x, y) => {
                     show_activity(&app, &state, Some((x, y)));
                 }
-                Action::Copy(slot) => {
-                    thread::sleep(Duration::from_millis(COPY_SETTLE_MS));
-                    // Respect apps that flag their content as sensitive /
-                    // exclude-from-history (password managers, banking, etc.).
-                    if clipboard::is_sensitive() {
+                Action::Copy(slot, baseline) => {
+                    // A slot copy is a stash: it should not disturb what a plain
+                    // Ctrl+V pastes. Grab the user's current clipboard now, so
+                    // it can be put back once the slot is filled.
+                    let preserved = capture_previous(baseline);
+
+                    // Wait for the app to actually finish writing rather than
+                    // sleeping a fixed guess. Reading too early captures the
+                    // *previous* clipboard contents and silently stores the
+                    // wrong thing in the slot.
+                    if !wait_for_clipboard(baseline) {
+                        // Nothing was copied, so the clipboard still holds what
+                        // the user had. Leave both it and the slot alone.
                         continue;
                     }
-                    match clipboard::snapshot() {
-                        Ok(snap) if !snap.is_empty() => {
-                            let preview = clipboard::preview(&snap);
-                            // Lands in the active folder.
-                            state.folders.lock().unwrap().set(slot, snap, preview);
-                            state.persist();
-                            crate::refresh_tray(&app, &state); // fill counts changed
-                            show_activity(&app, &state, None);
+
+                    // Respect apps that flag their content as sensitive /
+                    // exclude-from-history (password managers, banking, etc.).
+                    if !clipboard::is_sensitive() {
+                        match clipboard::snapshot() {
+                            Ok(snap) if !snap.is_empty() => {
+                                let preview = clipboard::preview(&snap);
+                                // Lands in the active folder.
+                                state.folders.lock().unwrap().set(slot, snap, preview);
+                                state.persist();
+                                crate::refresh_tray(&app, &state); // fill counts changed
+                                show_activity(&app, &state, None);
+                            }
+                            Ok(_) => {}
+                            Err(e) => eprintln!("[cq-paster] copy snapshot failed: {e}"),
                         }
-                        Ok(_) => {}
-                        Err(e) => eprintln!("[cq-paster] copy snapshot failed: {e}"),
                     }
 
+                    // Hand the user's clipboard back.
+                    if let Some(prev) = preserved {
+                        if let Err(e) = clipboard::restore(&prev) {
+                            eprintln!("[cq-paster] clipboard restore failed: {e}");
+                        }
+                    }
                 }
                 Action::Paste(slot, plain) => {
                     // Reads from the active folder.
@@ -200,6 +233,72 @@ mod windows_impl {
                     thread::sleep(Duration::from_millis(INJECT_GUARD_MS));
                     injecting.store(false, Ordering::SeqCst);
                 }
+            }
+        }
+    }
+
+    /// Capture the clipboard as it stood *before* the chord's copy lands, so it
+    /// can be restored afterwards.
+    ///
+    /// Returns `None` whenever we can't prove the capture predates the copy —
+    /// otherwise we'd "restore" the very thing we just stashed, undoing the
+    /// user's copy. The sequence number is the proof: it must still equal
+    /// `baseline` both before *and* after the read. If the app wrote while we
+    /// were reading, the snapshot may also be internally inconsistent (some
+    /// formats old, some new), and the same check throws it away.
+    fn capture_previous(baseline: u32) -> Option<crate::clipboard::ClipSnapshot> {
+        if clipboard::sequence_number() != baseline {
+            return None; // the copy already landed; too late to preserve
+        }
+        // Never re-publish password-manager content we were told not to keep.
+        if clipboard::is_sensitive() {
+            return None;
+        }
+        let snap = clipboard::snapshot().ok()?;
+        if snap.is_empty() {
+            return None;
+        }
+        if clipboard::sequence_number() != baseline {
+            return None; // moved underneath us — don't trust it
+        }
+        Some(snap)
+    }
+
+    /// Block until the clipboard has changed from `baseline` and then settled.
+    ///
+    /// Returns `false` if nothing changed before the deadline — meaning the
+    /// `Ctrl+C` produced nothing (no selection, or an app that ignores it). In
+    /// that case the caller leaves the slot untouched, rather than storing
+    /// whatever happened to be on the clipboard already.
+    fn wait_for_clipboard(baseline: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(COPY_WAIT_MS);
+
+        // Phase 1: wait for the copy to land at all.
+        let mut last = loop {
+            let now = clipboard::sequence_number();
+            if now != baseline {
+                break now;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(COPY_POLL_MS));
+        };
+
+        // Phase 2: an app publishing several formats bumps the counter once per
+        // format, so wait for it to stop moving before we read.
+        let mut stable_since = Instant::now();
+        loop {
+            thread::sleep(Duration::from_millis(COPY_POLL_MS));
+            let now = clipboard::sequence_number();
+            if now != last {
+                last = now;
+                stable_since = Instant::now();
+            } else if stable_since.elapsed() >= Duration::from_millis(COPY_QUIET_MS) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return true; // slow to settle; read what's there
             }
         }
     }
