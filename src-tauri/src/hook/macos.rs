@@ -31,12 +31,24 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::clipboard;
 use crate::{AppState, Mode};
 
-/// How long to wait after letting `Cmd+C` through before reading the
-/// pasteboard, so the foreground app has finished populating it.
-const COPY_SETTLE_MS: u64 = 120;
+/// Longest we will wait for the foreground app to publish its copy.
+///
+/// The Windows hook sleeps a flat 120ms here and hopes. We instead wait for the
+/// copy to actually arrive — see `capture_after_copy` — so this is only the
+/// point at which we give up, not an expected cost. Fast apps are served in a
+/// poll interval or two.
+const COPY_WAIT_MAX: Duration = Duration::from_millis(500);
+/// How often to check the change counter while waiting.
+const COPY_POLL: Duration = Duration::from_millis(10);
 /// How long to leave the "injecting" guard up so our synthetic keystrokes pass
 /// through the tap untouched.
 const INJECT_GUARD_MS: u64 = 40;
+/// How long to let the target read the pasteboard before we put the user's own
+/// clipboard back. macOS offers no "the paste completed" signal, so unlike the
+/// copy path this cannot wait on an outcome. Too short and the target pastes
+/// the handed-back content instead of the slot; too long and a quick plain
+/// Cmd+V lands before the handback.
+const PASTE_HANDBACK_DELAY: Duration = Duration::from_millis(180);
 /// Popup auto-hide delay after the last chord activity.
 const POPUP_HIDE_MS: u64 = 2200;
 /// How often to re-check for Accessibility permission before the tap exists.
@@ -81,6 +93,8 @@ const KCG_EVENT_SOURCE_HID_SYSTEM_STATE: i32 = 1;
 const KCG_FLAG_MASK_SHIFT: u64 = 0x0002_0000;
 const KCG_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
 const KCG_KEYBOARD_EVENT_KEYCODE: u32 = 9;
+/// Non-zero when a key event is the OS repeating a held key.
+const KCG_KEYBOARD_EVENT_AUTOREPEAT: u32 = 8;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -138,11 +152,24 @@ extern "C" {
 /// `extern "C"` function and cannot borrow the tap it belongs to.
 static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
+/// How many times a fresh Cmd press has cleared a pending digit. Diagnostic
+/// only: a single atomic increment is cheap enough for the callback, whereas
+/// logging there would get the tap disabled outright (6.1). Read and reported
+/// by the worker under CQ_DEBUG.
+static CHORD_RESETS: AtomicUsize = AtomicUsize::new(0);
+
+/// Trace chord activity to stderr. Off unless `CQ_DEBUG=1`, and only ever
+/// called from the worker thread.
+fn debug_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("CQ_DEBUG").is_ok_and(|v| v == "1"))
+}
+
 // ---- Chord machine -----------------------------------------------------------
 
 enum Action {
     /// Cmd+digit pressed: show the reference popup (Noob mode).
-    Peek(f64, f64),
+    Peek(usize, f64, f64),
     /// Cmd+<N>+C: copy the current selection into slot N.
     Copy(usize),
     /// Cmd+<N>+V: paste slot N. `plain` (Shift held) strips formatting.
@@ -320,6 +347,7 @@ extern "C" fn tap_callback(
     if event_type == KCG_EVENT_FLAGS_CHANGED {
         if is_command_key(keycode) && (flags & KCG_FLAG_MASK_COMMAND) != 0 {
             ctx.pending_slot.store(0, Ordering::SeqCst);
+            CHORD_RESETS.fetch_add(1, Ordering::Relaxed);
         }
         return event;
     }
@@ -331,22 +359,36 @@ extern "C" fn tap_callback(
     }
 
     if let Some(d) = digit_of(keycode) {
-        ctx.pending_slot.store(d, Ordering::SeqCst);
-        let at = unsafe { CGEventGetLocation(event) };
-        let _ = ctx.tx.send(Action::Peek(at.x, at.y));
+        // Arm on the initial press only. Holding Cmd+<N> repeats the digit at
+        // the OS repeat rate, and a repeat arriving *after* the C or V consumed
+        // the slot would silently re-arm it — turning the user's next plain
+        // Cmd+V into another chord paste. Repeats are still swallowed, so the
+        // app keeps owning Cmd+<N>.
+        let repeat =
+            unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_AUTOREPEAT) } != 0;
+        if !repeat {
+            ctx.pending_slot.store(d, Ordering::SeqCst);
+            let at = unsafe { CGEventGetLocation(event) };
+            let _ = ctx.tx.send(Action::Peek(d, at.x, at.y));
+        }
         return std::ptr::null_mut(); // swallow the digit
     }
 
     match keycode {
         VK_C => {
-            let slot = ctx.pending_slot.load(Ordering::SeqCst);
+            // `swap` consumes the digit: a chord arms exactly one action. If
+            // the slot merely stayed armed, the next plain Cmd+C would be read
+            // as a slot store and would silently overwrite what was saved.
+            // Correctness must not depend on observing a modifier release,
+            // which is exactly the state that goes missing during injection.
+            let slot = ctx.pending_slot.swap(0, Ordering::SeqCst);
             if slot != 0 {
                 let _ = ctx.tx.send(Action::Copy(slot));
             }
             event // let Cmd+C perform the real copy
         }
         VK_V => {
-            let slot = ctx.pending_slot.load(Ordering::SeqCst);
+            let slot = ctx.pending_slot.swap(0, Ordering::SeqCst);
             if slot != 0 {
                 let plain = (flags & KCG_FLAG_MASK_SHIFT) != 0;
                 let _ = ctx.tx.send(Action::Paste(slot, plain));
@@ -355,6 +397,105 @@ extern "C" fn tap_callback(
             event
         }
         _ => event,
+    }
+}
+
+/// Capture the pasteboard once it actually holds the copy.
+///
+/// Waiting on `changeCount` alone is not enough. The counter bumps when the
+/// source app calls `clearContents`/`declareTypes`, which happens *before* it
+/// writes the payloads — so a capture taken on the bump alone finds the types
+/// declared and empty. That produced a slot previewing as "(empty text)", and
+/// then a restore with nothing to write, and so no paste at all.
+///
+/// So the wait is on the outcome, not on a duration: poll until a snapshot
+/// actually carries bytes. Returns `None` if nothing usable ever appeared, in
+/// which case the caller must leave the slot alone rather than overwrite a good
+/// slot with an empty capture.
+fn capture_after_copy() -> Option<crate::clipboard::ClipSnapshot> {
+    let before = clipboard::change_count();
+    let deadline = std::time::Instant::now() + COPY_WAIT_MAX;
+    let mut changed = false;
+    let mut best: Option<crate::clipboard::ClipSnapshot> = None;
+
+    while std::time::Instant::now() < deadline {
+        thread::sleep(COPY_POLL);
+        if !changed && clipboard::change_count() != before {
+            changed = true;
+        }
+        if !changed {
+            continue;
+        }
+        // The counter moved; the payloads may still be on their way.
+        if let Ok(snap) = clipboard::snapshot() {
+            if snap.is_complete() {
+                trace(&format!("  captured {}", describe_snapshot(&snap)));
+                return Some(snap);
+            }
+            if !snap.is_empty() {
+                best = Some(snap); // partial: keep it, but keep waiting
+            }
+        }
+    }
+
+    // Never fully filled. Keep whatever did arrive, minus the empty types.
+    if let Some(partial) = best {
+        let trimmed = partial.without_empty_types();
+        if !trimmed.is_empty() {
+            trace(&format!(
+                "  captured partial (a type was declared but never filled) {}",
+                describe_snapshot(&trimmed)
+            ));
+            return Some(trimmed);
+        }
+    }
+
+    // Last chance: the app may have copied before we read the baseline, in
+    // which case the counter never appears to move.
+    match clipboard::snapshot() {
+        Ok(snap) if !snap.is_empty() => {
+            let snap = snap.without_empty_types();
+            trace(&format!("  captured late {}", describe_snapshot(&snap)));
+            Some(snap)
+        }
+        _ => None,
+    }
+}
+
+/// Every UTI and payload size in a snapshot, for tracing.
+fn describe_snapshot(snap: &crate::clipboard::ClipSnapshot) -> String {
+    let mut parts = Vec::new();
+    for (i, item) in snap.items.iter().enumerate() {
+        for t in &item.types {
+            parts.push(format!("i{i}:{}={}B", t.uti, t.data.len()));
+        }
+    }
+    format!("[{}]", parts.join(" "))
+}
+
+/// One-line summary of a slot's contents for a trace.
+///
+/// Note this puts clipboard text in the log, so `CQ_DEBUG=1` is a debugging
+/// aid, not something to leave on while handling anything secret.
+fn describe(p: &crate::clipboard::SlotPreview) -> String {
+    let body = match p.text.as_deref() {
+        Some(t) => {
+            let short: String = t.chars().take(40).collect();
+            format!("{short:?}")
+        }
+        None if !p.files.is_empty() => format!("{} file(s): {:?}", p.files.len(), p.files),
+        None => String::new(),
+    };
+    format!("[{} {}B] {}", p.kind, p.bytes, body)
+}
+
+/// Worker-thread-only tracing. Never call this from the tap callback.
+fn trace(msg: &str) {
+    if debug_on() {
+        eprintln!(
+            "[cq-paster] {msg}  (chord resets so far: {})",
+            CHORD_RESETS.load(Ordering::Relaxed)
+        );
     }
 }
 
@@ -368,30 +509,35 @@ fn worker(
 
     while let Ok(action) = rx.recv() {
         match action {
-            Action::Peek(x, y) => show_activity(&app, &state, Some((x, y))),
+            Action::Peek(slot, x, y) => {
+                trace(&format!("digit {slot} armed"));
+                show_activity(&app, &state, Some((x, y)));
+            }
             Action::Copy(slot) => {
-                thread::sleep(Duration::from_millis(COPY_SETTLE_MS));
-                // Respect apps that flag their content as sensitive. Note the
-                // caveat on `clipboard::is_sensitive`: the macOS signal is
-                // advisory and weaker than the Windows one.
+                trace(&format!("COPY -> slot {slot}"));
                 if clipboard::is_sensitive() {
+                    trace("  skipped: pasteboard is marked concealed");
                     continue;
                 }
-                match clipboard::snapshot() {
-                    Ok(snap) if !snap.is_empty() => {
-                        let preview = clipboard::preview(&snap);
-                        state.folders.lock().unwrap().set(slot, snap, preview);
-                        state.persist();
-                        crate::refresh_tray(&app, &state); // fill counts changed
-                        show_activity(&app, &state, None);
-                    }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("[cq-paster] copy snapshot failed: {e}"),
-                }
+                let Some(snap) = capture_after_copy() else {
+                    // Nothing usable arrived. Leaving the slot untouched is the
+                    // only safe move — overwriting it with an empty capture
+                    // destroys whatever the user had saved there.
+                    trace("  SKIPPED: no content published; slot left unchanged");
+                    continue;
+                };
+                let preview = clipboard::preview(&snap);
+                trace(&format!("  stored {}", describe(&preview)));
+                state.folders.lock().unwrap().set(slot, snap, preview);
+                state.persist();
+                crate::refresh_tray(&app, &state); // fill counts changed
+                show_activity(&app, &state, None);
             }
             Action::Paste(slot, plain) => {
+                trace(&format!("PASTE <- slot {slot} (plain={plain})"));
                 let slot_snap = state.folders.lock().unwrap().get_snapshot(slot);
                 let Some(slot_snap) = slot_snap else {
+                    trace("  SKIPPED: slot is empty");
                     continue; // empty slot: nothing to paste
                 };
 
@@ -401,10 +547,23 @@ fn worker(
                     slot_snap
                 };
 
-                // Load the slot, then inject the paste. We deliberately do NOT
-                // snapshot the live pasteboard first: reading a lazy provider
-                // can make the source app re-assert and clobber what we set.
-                if clipboard::restore(&to_paste).is_err() {
+                // The slot is pasted by borrowing the system pasteboard, so
+                // whatever the user last copied with a plain Cmd+C has to be
+                // put back afterwards. Otherwise a chord paste leaves slot N on
+                // the pasteboard and the user's next plain Cmd+V re-pastes it —
+                // the two pairs must stay independent.
+                let borrowed = clipboard::snapshot().ok().filter(|s| !s.is_empty());
+                trace(&format!(
+                    "  borrowing pasteboard ({})",
+                    match &borrowed {
+                        Some(s) => describe(&clipboard::preview(s)),
+                        None => "nothing to put back".into(),
+                    }
+                ));
+
+                trace(&format!("  restoring {}", describe(&clipboard::preview(&to_paste))));
+                if let Err(e) = clipboard::restore(&to_paste) {
+                    trace(&format!("  SKIPPED: restore failed: {e}"));
                     continue;
                 }
 
@@ -412,6 +571,19 @@ fn worker(
                 inject_paste();
                 thread::sleep(Duration::from_millis(INJECT_GUARD_MS));
                 injecting.store(false, Ordering::SeqCst);
+
+                // Give the target time to actually read the pasteboard before
+                // taking it back. There is no signal for "the paste completed",
+                // so this one genuinely is a delay rather than a wait on an
+                // event — restore too early and the target pastes the wrong
+                // thing.
+                if let Some(prev) = borrowed {
+                    thread::sleep(PASTE_HANDBACK_DELAY);
+                    match clipboard::restore(&prev) {
+                        Ok(()) => trace("  pasteboard handed back"),
+                        Err(e) => trace(&format!("  WARNING: could not hand back: {e}")),
+                    }
+                }
             }
         }
     }
@@ -458,18 +630,26 @@ fn inject_paste() {
     unsafe {
         let source = CGEventSourceCreate(KCG_EVENT_SOURCE_HID_SYSTEM_STATE);
         if source.is_null() {
+            trace("  INJECT FAILED: could not create an event source");
             return;
         }
+        let mut posted = 0;
         for down in [true, false] {
             let ev = CGEventCreateKeyboardEvent(source, VK_V as u16, down);
             if ev.is_null() {
+                trace("  INJECT FAILED: could not create the key event");
                 continue;
             }
             CGEventSetFlags(ev, KCG_FLAG_MASK_COMMAND);
             CGEventPost(KCG_HID_EVENT_TAP, ev);
             CFRelease(ev as CFTypeRef);
+            posted += 1;
+            // Some targets drop a key-up that arrives in the same instant as
+            // its key-down; the Windows path spaces its synthetic keys too.
+            thread::sleep(Duration::from_millis(5));
         }
         CFRelease(source as CFTypeRef);
+        trace(&format!("  injected Cmd+V ({posted}/2 events posted)"));
     }
 }
 
