@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::{is_sensitive, init_thread, preview, restore, snapshot, text_only};
+pub use macos::{change_count, is_sensitive, init_thread, preview, restore, snapshot, text_only};
 // ClipItem/ClipType are re-exported for `slots.rs`'s test helpers, which build
 // a snapshot directly; only ClipSnapshot is needed by non-test code.
 #[cfg(target_os = "macos")]

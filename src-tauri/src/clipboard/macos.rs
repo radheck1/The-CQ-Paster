@@ -75,13 +75,59 @@ pub struct ClipSnapshot {
 }
 
 impl ClipSnapshot {
+    /// True when the snapshot carries no actual bytes.
+    ///
+    /// Checks payloads, not just type names. A pasteboard caught mid-write has
+    /// its types already declared but not yet filled, so counting declared
+    /// types would call that a valid capture and store an empty slot.
     pub fn is_empty(&self) -> bool {
-        self.items.iter().all(|i| i.types.is_empty())
+        !self
+            .items
+            .iter()
+            .any(|i| i.types.iter().any(|t| !t.data.is_empty()))
     }
 
-    /// First occurrence of `uti` across all items.
+    /// True when the capture looks finished.
+    ///
+    /// A publisher declares its types and then fills them, so a type present
+    /// with an empty payload means the copy is still in flight. WebKit is the
+    /// clear case: it lands `com.apple.webarchive` first and leaves
+    /// `public.html` and `public.utf8-plain-text` at 0 bytes for a moment.
+    /// Accepting that capture stores a slot that previews as empty and pastes
+    /// nothing, so "some type has bytes" is too weak a test — every declared
+    /// type must have them.
+    pub fn is_complete(&self) -> bool {
+        !self.is_empty()
+            && self
+                .items
+                .iter()
+                .all(|i| i.types.iter().all(|t| !t.data.is_empty()))
+    }
+
+    /// The same snapshot without any declared-but-empty types.
+    ///
+    /// Used only as a fallback when a publisher never fills a type it declared:
+    /// better to keep what did arrive than to store empty payloads that make
+    /// previews blank and paste nothing.
+    pub fn without_empty_types(&self) -> ClipSnapshot {
+        ClipSnapshot {
+            items: self
+                .items
+                .iter()
+                .map(|i| ClipItem {
+                    types: i.types.iter().filter(|t| !t.data.is_empty()).cloned().collect(),
+                })
+                .filter(|i: &ClipItem| !i.types.is_empty())
+                .collect(),
+        }
+    }
+
+    /// First occurrence of `uti` across all items, ignoring empty payloads so a
+    /// declared-but-unfilled type never masks a real one.
     fn find(&self, uti: &str) -> Option<&[u8]> {
-        self.items.iter().find_map(|i| i.find(uti))
+        self.items
+            .iter()
+            .find_map(|i| i.find(uti).filter(|d| !d.is_empty()))
     }
 
     fn has(&self, uti: &str) -> bool {
@@ -135,6 +181,13 @@ fn path_of_file_url(raw: &[u8]) -> Option<String> {
     })
 }
 
+/// The pasteboard's change counter, which increments on every write by any
+/// process. Lets a caller wait for a copy to actually land instead of guessing
+/// at a duration.
+pub fn change_count() -> i64 {
+    autoreleasepool(|_| pasteboard().changeCount() as i64)
+}
+
 /// Capture every item and type currently on the pasteboard.
 ///
 /// Types whose provider returns `nil` are lazy promises that never
@@ -147,15 +200,38 @@ pub fn snapshot() -> Result<ClipSnapshot, String> {
             return Ok(ClipSnapshot::default());
         };
         let mut out = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+
         for item in items.iter() {
             let mut types = Vec::new();
             for ty in item.types().iter() {
                 let uti = ty.to_string();
-                let Some(data) = item.dataForType(&ty) else {
-                    continue; // unmaterialised promise
-                };
-                let mut data = data.to_vec();
-                if uti == UTI_FILE_URL {
+                let mut data = item
+                    .dataForType(&ty)
+                    .map(|d| d.to_vec())
+                    .unwrap_or_default();
+
+                // Promised ("lazy") data: the per-item read hands back an empty
+                // NSData, while the pasteboard-level read makes the owning app
+                // actually produce the bytes. WebKit apps publish their text and
+                // HTML this way, so without this a copy from one of them stores
+                // only a webarchive and pastes nothing.
+                //
+                // Restricted to the first item declaring a given UTI, because
+                // the pasteboard-level call always answers from that item — using
+                // it for later items would copy item 0's payload across a
+                // multi-item pasteboard such as a Finder file selection.
+                let first_for_uti = !seen.contains(&uti);
+                if data.is_empty() && first_for_uti {
+                    if let Some(d) = pb.dataForType(&ty) {
+                        data = d.to_vec();
+                    }
+                }
+                seen.push(uti.clone());
+
+                // Types left empty are deliberately kept: `is_complete` uses
+                // them to tell a still-arriving copy from a finished one.
+                if uti == UTI_FILE_URL && !data.is_empty() {
                     if let Some(resolved) = resolved_file_url(&data) {
                         data = resolved;
                     }
@@ -249,11 +325,13 @@ pub fn init_thread() {}
 /// slot carries no text at all (an image or a pure file list).
 pub fn text_only(snap: &ClipSnapshot) -> Option<ClipSnapshot> {
     let keep = [UTI_TEXT, UTI_TEXT16];
+    // Empty payloads are skipped: a declared-but-unfilled text type would
+    // otherwise pass as text and make a plain-text paste insert nothing.
     let types: Vec<ClipType> = snap
         .items
         .iter()
         .flat_map(|i| i.types.iter())
-        .filter(|t| keep.contains(&t.uti.as_str()))
+        .filter(|t| keep.contains(&t.uti.as_str()) && !t.data.is_empty())
         .cloned()
         .collect();
     if types.is_empty() {
@@ -440,6 +518,48 @@ mod tests {
             ],
         };
         assert_eq!(preview(&snap).kind, "files");
+    }
+
+    /// The real shape WebKit publishes mid-copy: its own types filled, the
+    /// content types declared and still empty. Accepting this stores a slot
+    /// that previews blank and pastes nothing.
+    #[test]
+    fn a_half_written_webkit_pasteboard_is_not_complete() {
+        let snap = ClipSnapshot {
+            items: vec![item(&[
+                ("com.apple.webarchive", &[0u8; 253]),
+                (UTI_HTML, b""),
+                (UTI_TEXT, b""),
+                ("com.apple.WebKit.custom-pasteboard-data", &[0u8; 46]),
+            ])],
+        };
+        assert!(!snap.is_empty(), "it does carry some bytes");
+        assert!(!snap.is_complete(), "but the content types are unfilled");
+        // A blank text type must not mask the absence of real text.
+        assert_eq!(preview(&snap).text, None);
+        assert!(text_only(&snap).is_none());
+    }
+
+    #[test]
+    fn a_fully_written_pasteboard_is_complete() {
+        let snap = ClipSnapshot {
+            items: vec![item(&[(UTI_HTML, b"<b>hi</b>"), (UTI_TEXT, b"hi")])],
+        };
+        assert!(snap.is_complete());
+    }
+
+    #[test]
+    fn without_empty_types_keeps_only_what_arrived() {
+        let snap = ClipSnapshot {
+            items: vec![
+                item(&[("com.apple.webarchive", b"data"), (UTI_TEXT, b"")]),
+                item(&[(UTI_HTML, b"")]),
+            ],
+        };
+        let trimmed = snap.without_empty_types();
+        assert_eq!(trimmed.items.len(), 1, "the all-empty item is dropped");
+        assert_eq!(trimmed.items[0].types.len(), 1);
+        assert_eq!(trimmed.items[0].types[0].uti, "com.apple.webarchive");
     }
 
     #[test]
