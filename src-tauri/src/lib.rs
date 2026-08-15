@@ -17,12 +17,54 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use slots::{FolderDto, FolderStore, SlotDto, SlotStore};
 
-/// Per-user directory holding the persisted state.
+/// Per-user directory holding the persisted state: `%APPDATA%\com.cqpaster.app`
+/// on Windows, `~/Library/Application Support/com.cqpaster.app` on macOS.
+///
+/// This must never resolve to a relative path. `SlotStore::save` discards its
+/// errors, so an unwritable directory loses every slot silently — and a bundled
+/// `.app` runs with the working directory set to `/`, where a relative fallback
+/// is guaranteed to fail. See `ensure_data_dir`, which reports that at startup.
+#[cfg(windows)]
 fn data_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("com.cqpaster.app")
+}
+
+#[cfg(target_os = "macos")]
+fn data_dir() -> PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("Library")
+        .join("Application Support")
+        .join("com.cqpaster.app")
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn data_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("com.cqpaster.app")
+}
+
+/// Create the data directory up front and surface a failure.
+///
+/// Persistence is otherwise entirely silent: `SlotStore::save` swallows both the
+/// `create_dir_all` and the `write` error, so a bad path looks like a working
+/// app that forgets everything on quit. One check at startup turns that into a
+/// visible message instead of a bug report weeks later.
+fn ensure_data_dir() {
+    let dir = data_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "[cq-paster] cannot create data directory {} — slots will not persist: {e}",
+            dir.display()
+        );
+    }
 }
 
 /// Where folders (and their slots) are persisted, so they survive restarts.
@@ -489,6 +531,7 @@ fn make_non_activating(win: &tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    ensure_data_dir();
     let app_state = Arc::new(AppState::new());
 
     tauri::Builder::default()
@@ -515,6 +558,14 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+
+            // Menu-bar app: no Dock icon and no application menu. Without this
+            // Tauri registers as a regular foreground app, which is wrong for
+            // something that lives in the menu bar — and it makes "closing the
+            // control panel keeps the app alive" behave differently, since the
+            // Dock icon would keep offering a way back into a window-less app.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Popup: hidden, non-activating, click-through.
             if let Some(popup) = app.get_webview_window("popup") {
