@@ -148,12 +148,247 @@ button {
   flex-direction: column;
 }
 
+/* Slot-dot hues, sampled from the mode toggle's gradients so the dots and the
+   selected toggle always read as the same colour. Solid rather than gradient:
+   at 7px a gradient is invisible, and a solid colour cross-fades on toggle. */
+.panel[data-mode="master"] {
+  --dot: #d1552b;
+  --dot-glow: rgba(205, 90, 43, 0.85);
+  --dot-glow-soft: rgba(205, 90, 43, 0.35);
+}
+
+.panel[data-mode="noob"] {
+  --dot: #2fa389;
+  --dot-glow: rgba(42, 157, 143, 0.8);
+  --dot-glow-soft: rgba(42, 157, 143, 0.32);
+}
+
 .panel-head {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+
+/* Mode toggle + help icon sit together on the right. */
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ===== Folder picker ===== */
+.folder-wrap {
+  position: relative;
+}
+
+.folder-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 165px;
+  padding: 6px 11px;
+  background: var(--toggle-bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  transition: border-color 0.12s ease;
+}
+
+.folder-pill:hover,
+.folder-pill[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+
+.fp-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-pill svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.folder-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  width: 236px;
+  padding: 4px;
+  background: var(--pop-bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+}
+
+.folder-menu[hidden] {
+  display: none;
+}
+
+/* Capped so a long folder list scrolls inside the menu instead of running past
+   the bottom of the window (which auto-fits its content). */
+.folder-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 7px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.folder-row:hover {
+  background: var(--slot-hover);
+}
+
+.fr-check {
+  width: 14px;
+  flex: 0 0 14px;
+  display: grid;
+  place-items: center;
+  color: var(--accent-2);
+}
+
+.fr-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-row.active .fr-name {
+  font-weight: 700;
+}
+
+.fr-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--empty);
+}
+
+/* Swap the fill count for the row actions on hover, so nothing shifts. */
+.fr-actions {
+  display: none;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.folder-row:hover .fr-actions {
+  display: flex;
+}
+
+/* The home folder has no actions to swap in, so its count stays put. */
+.folder-row:hover:not(.no-actions) .fr-count {
+  display: none;
+}
+
+.fr-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 3px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+}
+
+.fr-btn:hover {
+  color: var(--text);
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.fr-del:hover {
+  color: var(--danger);
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.folder-row.confirming,
+.folder-row.editing {
+  cursor: default;
+}
+
+.folder-row.confirming:hover {
+  background: transparent;
+}
+
+.fr-confirm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.fr-yes,
+.fr-no {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.fr-yes {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.fr-no:hover {
+  color: var(--text);
+}
+
+.fr-input {
+  width: 100%;
+  padding: 5px 7px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.folder-new {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 7px;
+  border: none;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--accent);
+  font-size: 12.5px;
+}
+
+.folder-new:hover:not(.editing) {
+  background: var(--slot-hover);
+}
+
+.folder-new.editing {
+  padding: 7px 5px 5px;
 }
 
 /* Info / help icon with a hover popover holding the shortcut description. */
@@ -336,6 +571,24 @@ button {
   display: flex;
 }
 
+/* Filled-slot indicator: a glowing dot left of the number, tinted to match the
+   active mode's toggle (Master = blood orange, Noob = green). Empty slots keep
+   the element so the numbers stay aligned — it's just invisible. */
+.s-dot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  margin-right: -2px;
+  border-radius: 50%;
+  background-color: transparent;
+  transition: background-color 0.22s ease, box-shadow 0.22s ease;
+}
+
+.slot.filled .s-dot {
+  background-color: var(--dot);
+  box-shadow: 0 0 5px var(--dot-glow), 0 0 11px var(--dot-glow-soft);
+}
+
 .s-num {
   width: 20px;
   flex: 0 0 20px;
@@ -344,10 +597,6 @@ button {
   font-weight: 700;
   font-size: 14px;
   color: var(--text);
-}
-
-.slot.filled .s-num {
-  color: var(--accent-2);
 }
 
 .s-body {
@@ -471,6 +720,25 @@ button {
   width: 18px;
   height: 18px;
   border-radius: 5px;
+}
+
+/* Which folder these 9 slots belong to — the only cue you get mid-paste. */
+.popup-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.popup-folder svg {
+  flex: 0 0 auto;
 }
 
 /* Theme-aware logo swap: light mode shows the black logo, dark mode the white.

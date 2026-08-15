@@ -158,8 +158,10 @@ mod windows_impl {
                     match clipboard::snapshot() {
                         Ok(snap) if !snap.is_empty() => {
                             let preview = clipboard::preview(&snap);
-                            state.slots.lock().unwrap().set(slot, snap, preview);
+                            // Lands in the active folder.
+                            state.folders.lock().unwrap().set(slot, snap, preview);
                             state.persist();
+                            crate::refresh_tray(&app, &state); // fill counts changed
                             show_activity(&app, &state, None);
                         }
                         Ok(_) => {}
@@ -168,7 +170,8 @@ mod windows_impl {
 
                 }
                 Action::Paste(slot, plain) => {
-                    let slot_snap = state.slots.lock().unwrap().get_snapshot(slot);
+                    // Reads from the active folder.
+                    let slot_snap = state.folders.lock().unwrap().get_snapshot(slot);
                     let Some(slot_snap) = slot_snap else {
                         continue; // empty slot: nothing to paste
                     };

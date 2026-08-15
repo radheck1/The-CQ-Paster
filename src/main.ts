@@ -12,16 +12,54 @@ type Preview = {
 };
 
 type SlotDto = { index: number; filled: boolean; preview?: Preview };
-type StateDto = { mode: "master" | "noob"; slots: SlotDto[] };
+type FolderDto = {
+  id: number;
+  name: string;
+  filled: number;
+  active: boolean;
+  /** The home folder — can't be renamed or deleted. */
+  permanent: boolean;
+};
+type StateDto = {
+  mode: "master" | "noob";
+  slots: SlotDto[];
+  folders: FolderDto[];
+  activeFolder: number;
+  folderName: string;
+};
 
 const label = getCurrentWindow().label;
 const app = document.getElementById("app")!;
 
 // Undo-after-clear: how long the Undo button stays offered, and its state.
 const UNDO_MS = 10000;
-const UNDO_ICON = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>`;
+const svg = (body: string, size = 13) =>
+  `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+
+const UNDO_ICON = svg(`<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>`);
+const FOLDER_ICON = svg(
+  `<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>`,
+);
+const CHECK_ICON = svg(`<polyline points="20 6 9 17 4 12"/>`, 12);
+const PENCIL_ICON = svg(
+  `<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/>`,
+  12,
+);
+const X_ICON = svg(`<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`, 12);
+const PLUS_ICON = svg(`<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>`, 12);
+
 let undoUntil = 0;
 let undoTimer: number | undefined;
+
+// ---- Folder dropdown state (main window only) ----
+type Editing = { kind: "create" } | { kind: "rename"; id: number };
+let menuOpen = false;
+let editing: Editing | null = null;
+let confirmDelete: number | null = null;
+/** Set when a state update arrives mid-edit; applied once the edit finishes. */
+let deferred: StateDto | null = null;
+
+const MAX_NAME = 24;
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -80,10 +118,196 @@ function renderPopup(state: StateDto) {
         <img class="popup-logo theme-logo for-dark" src="/logo-white.png" alt="" />
         <img class="popup-logo theme-logo for-light" src="/logo-black.png" alt="" />
         <span>Paster</span>
+        <span class="popup-folder" title="Active folder">${FOLDER_ICON}${escapeHtml(
+          state.folderName,
+        )}</span>
       </div>
       <ul class="popup-list">${rows}</ul>
       <div class="popup-foot">Ctrl+N+C copy · Ctrl+N+V paste · +Shift = plain text</div>
     </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Folder picker: a pill showing the active folder, opening a dropdown of all
+// folders plus a permanent "create" row.
+// ---------------------------------------------------------------------------
+function folderControl(state: StateDto): string {
+  const rows = state.folders
+    .map((f) => {
+      if (editing?.kind === "rename" && editing.id === f.id) {
+        return `<li class="folder-row editing">
+          <input class="fr-input" id="fr-input" type="text" maxlength="${MAX_NAME}"
+                 value="${escapeHtml(f.name)}" aria-label="Rename folder" />
+        </li>`;
+      }
+      if (confirmDelete === f.id) {
+        return `<li class="folder-row confirming">
+          <span class="fr-confirm">Delete “${escapeHtml(f.name)}”?</span>
+          <button class="fr-yes" data-yes="${f.id}">Delete</button>
+          <button class="fr-no" data-no="${f.id}">Cancel</button>
+        </li>`;
+      }
+      // The home folder is fixed: no rename, no delete. Its row keeps showing
+      // the fill count on hover, since there are no actions to swap in.
+      const cls = [f.active ? "active" : "", f.permanent ? "no-actions" : ""]
+        .filter(Boolean)
+        .join(" ");
+      const actions = f.permanent
+        ? ""
+        : `<span class="fr-actions">
+             <button class="fr-btn" data-rename="${f.id}" title="Rename">${PENCIL_ICON}</button>
+             <button class="fr-btn fr-del" data-del="${f.id}" title="Delete folder">${X_ICON}</button>
+           </span>`;
+      return `<li class="folder-row ${cls}" data-select="${f.id}"
+                  title="${
+                    f.permanent
+                      ? "Home folder — always here"
+                      : `Switch to ${escapeHtml(f.name)}`
+                  }">
+        <span class="fr-check">${f.active ? CHECK_ICON : ""}</span>
+        <span class="fr-name">${escapeHtml(f.name)}</span>
+        <span class="fr-count">${f.filled}/9</span>
+        ${actions}
+      </li>`;
+    })
+    .join("");
+
+  const newRow =
+    editing?.kind === "create"
+      ? `<div class="folder-new editing">
+           <input class="fr-input" id="fr-input" type="text" maxlength="${MAX_NAME}"
+                  placeholder="Folder name" aria-label="New folder name" />
+         </div>`
+      : `<button class="folder-new" id="folder-new">${PLUS_ICON} Create new folder</button>`;
+
+  return `
+    <div class="folder-wrap">
+      <button class="folder-pill" id="folder-btn" aria-haspopup="true" aria-expanded="${menuOpen}"
+              title="Folder — each has its own 9 slots">
+        <span class="fp-name">${escapeHtml(state.folderName)}</span>
+        ${FOLDER_ICON}
+      </button>
+      <div class="folder-menu"${menuOpen ? "" : " hidden"}>
+        <ul class="folder-list">${rows}</ul>
+        ${newRow}
+      </div>
+    </div>`;
+}
+
+/** Close the dropdown and drop any in-progress edit/confirm. */
+function closeMenu() {
+  menuOpen = false;
+  editing = null;
+  confirmDelete = null;
+  redraw();
+}
+
+/** Finish an edit, applying any state update that arrived while it was open. */
+function endEdit() {
+  editing = null;
+  if (deferred) {
+    latest = deferred;
+    deferred = null;
+  }
+  redraw();
+}
+
+function commitEdit(value: string) {
+  const name = value.trim().slice(0, MAX_NAME);
+  const was = editing;
+  editing = null;
+  if (name && was) {
+    if (was.kind === "create") {
+      menuOpen = false;
+      invoke("create_folder", { name });
+    } else {
+      invoke("rename_folder", { id: was.id, name });
+    }
+  }
+  endEdit();
+}
+
+function wireFolderControl(state: StateDto) {
+  const q = <T extends HTMLElement>(sel: string) => app.querySelector<T>(sel);
+
+  q<HTMLButtonElement>("#folder-btn")?.addEventListener("click", () => {
+    menuOpen = !menuOpen;
+    editing = null;
+    confirmDelete = null;
+    redraw();
+  });
+
+  app.querySelectorAll<HTMLElement>("[data-select]").forEach((row) => {
+    row.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("button")) return; // rename / delete
+      const id = Number(row.dataset.select);
+      menuOpen = false;
+      confirmDelete = null;
+      if (id !== state.activeFolder) invoke("select_folder", { id });
+      redraw();
+    });
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-rename]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      confirmDelete = null;
+      editing = { kind: "rename", id: Number(btn.dataset.rename) };
+      redraw();
+    });
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-del]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      editing = null;
+      confirmDelete = Number(btn.dataset.del);
+      redraw();
+    });
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-yes]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      confirmDelete = null;
+      invoke("delete_folder", { id: Number(btn.dataset.yes) });
+      redraw();
+    });
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-no]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      confirmDelete = null;
+      redraw();
+    });
+  });
+
+  q<HTMLButtonElement>("#folder-new")?.addEventListener("click", () => {
+    confirmDelete = null;
+    editing = { kind: "create" };
+    redraw();
+  });
+
+  const input = q<HTMLInputElement>("#fr-input");
+  if (input) {
+    input.focus();
+    input.select();
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitEdit(input.value);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation(); // don't also close the menu
+        endEdit();
+      }
+    });
+    // Clicking away commits a non-empty name rather than silently discarding it.
+    input.addEventListener("blur", () => {
+      if (editing) commitEdit(input.value);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +333,7 @@ function renderMain(state: StateDto) {
         <div class="slot ${filled ? "filled" : ""}" data-index="${s.index}"${
           filled ? ` title="Click to copy slot ${s.index} to the clipboard"` : ""
         }>
+          <span class="s-dot" aria-hidden="true"></span>
           <div class="s-num">${s.index}</div>
           <div class="s-body">${meta}</div>
           ${clearBtn}
@@ -132,21 +357,27 @@ function renderMain(state: StateDto) {
         </button>
       </div>
     </div>
-    <div class="panel">
+    <div class="panel" data-mode="${state.mode}">
       <header class="panel-head">
-        <div class="mode-switch" role="group" aria-label="Mode">
-          <button class="mode ${!isNoob ? "active" : ""}" data-mode="master">Master &gt;:)</button>
-          <button class="mode ${isNoob ? "active" : ""}" data-mode="noob">Noob :)</button>
-        </div>
-        <div class="info" tabindex="0" role="button" aria-label="Shortcuts and help">
-          <span class="info-q" aria-hidden="true">?</span>
-          <div class="info-pop" role="tooltip">
-            <b>Ctrl+&lt;N&gt;+C</b> copies into slot N<br />
-            <b>Ctrl+&lt;N&gt;+V</b> pastes it (add <b>Shift</b> to paste as plain text)<br />
-            Plain Ctrl+C / Ctrl+V still work normally.<br />
-            <b>Click any slot</b> to load it onto the clipboard, then paste with Ctrl+V.
-            <br /><br />
-            <b>Noob</b> shows a popup by your cursor; <b>Master</b> is fully invisible.
+        ${folderControl(state)}
+        <div class="head-right">
+          <div class="mode-switch" role="group" aria-label="Mode">
+            <button class="mode ${!isNoob ? "active" : ""}" data-mode="master">Master &gt;:)</button>
+            <button class="mode ${isNoob ? "active" : ""}" data-mode="noob">Noob :)</button>
+          </div>
+          <div class="info" tabindex="0" role="button" aria-label="Shortcuts and help">
+            <span class="info-q" aria-hidden="true">?</span>
+            <div class="info-pop" role="tooltip">
+              <b>Ctrl+&lt;N&gt;+C</b> copies into slot N<br />
+              <b>Ctrl+&lt;N&gt;+V</b> pastes it (add <b>Shift</b> to paste as plain text)<br />
+              Plain Ctrl+C / Ctrl+V still work normally.<br />
+              <b>Click any slot</b> to load it onto the clipboard, then paste with Ctrl+V.
+              <br /><br />
+              <b>Folders</b> each hold their own 9 slots — hotkeys, Clear all and Undo
+              apply only to the folder you're in.
+              <br /><br />
+              <b>Noob</b> shows a popup by your cursor; <b>Master</b> is fully invisible.
+            </div>
           </div>
         </div>
       </header>
@@ -154,7 +385,8 @@ function renderMain(state: StateDto) {
       <div class="slots">${slotRows}</div>
 
       <footer class="panel-foot">
-        <button class="ghost" id="clear-all"${hasFilled ? "" : " disabled"}>Clear all</button>
+        <button class="ghost" id="clear-all"${hasFilled ? "" : " disabled"}
+          title="Clear the 9 slots in “${escapeHtml(state.folderName)}” — other folders are untouched">Clear all</button>
         ${
           Date.now() < undoUntil
             ? `<button class="ghost undo" id="undo-clear" title="Restore the cleared slots">${UNDO_ICON} Undo</button>`
@@ -174,12 +406,19 @@ function renderMain(state: StateDto) {
   });
   app.querySelectorAll<HTMLButtonElement>(".mode").forEach((btn) => {
     btn.addEventListener("click", () => {
-      invoke("set_mode", { mode: btn.dataset.mode });
+      const mode = btn.dataset.mode as "master" | "noob";
+      invoke("set_mode", { mode });
       // Toggle active in place so the colors cross-fade — a full re-render would
       // replace the buttons and skip the CSS transition.
       app.querySelectorAll<HTMLElement>(".mode").forEach((b) => {
         b.classList.toggle("active", b === btn);
       });
+      // Drives the slot dots, which take their hue from the mode.
+      app.querySelector<HTMLElement>(".panel")?.setAttribute("data-mode", mode);
+      // `set_mode` deliberately emits no event, so keep the cached state in step
+      // — otherwise the next redraw (e.g. opening the folder menu) would snap
+      // the toggle and the dots back to the old mode.
+      if (latest) latest.mode = mode;
     });
   });
   app.querySelectorAll<HTMLButtonElement>(".s-clear").forEach((btn) => {
@@ -214,6 +453,8 @@ function renderMain(state: StateDto) {
     if (undoTimer) clearTimeout(undoTimer);
     invoke("undo_clear"); // restores slots and emits state-updated → re-render
   });
+
+  wireFolderControl(state);
 }
 
 function escapeHtml(s: string): string {
@@ -240,14 +481,29 @@ function fitMainWindow() {
   });
 }
 
-function render(state: StateDto) {
-  latest = state;
-  if (label === "popup") {
-    renderPopup(state);
-  } else {
-    renderMain(state);
+/** Re-render the control panel from the last known state. */
+function redraw() {
+  if (latest && label !== "popup") {
+    renderMain(latest);
     fitMainWindow();
   }
+}
+
+function render(state: StateDto) {
+  if (label === "popup") {
+    latest = state;
+    renderPopup(state);
+    return;
+  }
+  // A re-render replaces the DOM, which would destroy a folder name the user is
+  // halfway through typing. Hold the update until the edit finishes.
+  if (editing) {
+    deferred = state;
+    return;
+  }
+  latest = state;
+  renderMain(state);
+  fitMainWindow();
 }
 
 async function boot() {
@@ -257,6 +513,16 @@ async function boot() {
   if (label === "main") {
     getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (focused) fitMainWindow();
+    });
+    // Dismiss the folder dropdown on an outside click or Escape. Registered
+    // once, on the document, so re-renders don't stack duplicate listeners.
+    document.addEventListener("mousedown", (e) => {
+      if (!menuOpen) return;
+      if ((e.target as HTMLElement).closest(".folder-wrap")) return;
+      closeMenu();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && menuOpen) closeMenu();
     });
   }
   try {

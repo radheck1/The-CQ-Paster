@@ -15,14 +15,24 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use slots::{SlotDto, SlotStore};
+use slots::{FolderDto, FolderStore, SlotDto, SlotStore};
 
-/// Where slots are persisted, so they survive restarts.
-fn slots_file() -> PathBuf {
+/// Per-user directory holding the persisted state.
+fn data_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("com.cqpaster.app").join("slots.bin")
+    base.join("com.cqpaster.app")
+}
+
+/// Where folders (and their slots) are persisted, so they survive restarts.
+fn folders_file() -> PathBuf {
+    data_dir().join("folders.bin")
+}
+
+/// The pre-folders store. Read once, to migrate existing slots into "Main".
+fn legacy_slots_file() -> PathBuf {
+    data_dir().join("slots.bin")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,22 +53,24 @@ impl Mode {
 /// Shared application state. Held both in Tauri's managed state (for commands)
 /// and by the hook worker thread.
 pub struct AppState {
-    pub slots: Mutex<SlotStore>,
+    /// All folders plus the active pointer. Hotkeys act on the active folder.
+    pub folders: Mutex<FolderStore>,
     pub mode: Mutex<Mode>,
     /// Monotonic counter used to debounce the popup auto-hide timer.
     pub popup_gen: AtomicU64,
-    /// Snapshot of the slots taken just before the last "clear all", so it can
-    /// be undone.
-    pub last_cleared: Mutex<Option<SlotStore>>,
-    /// On-disk location the slots persist to.
+    /// Slots taken just before the last "clear all", tagged with the folder they
+    /// came from so undo restores them to the right place even if the user has
+    /// switched folders since.
+    pub last_cleared: Mutex<Option<(u64, SlotStore)>>,
+    /// On-disk location the folders persist to.
     store_file: PathBuf,
 }
 
 impl AppState {
     fn new() -> Self {
-        let store_file = slots_file();
+        let store_file = folders_file();
         Self {
-            slots: Mutex::new(SlotStore::load(&store_file)),
+            folders: Mutex::new(FolderStore::load(&store_file, &legacy_slots_file())),
             mode: Mutex::new(Mode::Noob),
             popup_gen: AtomicU64::new(0),
             last_cleared: Mutex::new(None),
@@ -67,15 +79,20 @@ impl AppState {
     }
 
     pub fn to_dto(&self) -> StateDto {
+        let mode = self.mode.lock().unwrap().as_str().to_string();
+        let folders = self.folders.lock().unwrap();
         StateDto {
-            mode: self.mode.lock().unwrap().as_str().to_string(),
-            slots: self.slots.lock().unwrap().dtos(),
+            mode,
+            slots: folders.dtos(),
+            folders: folders.folder_dtos(),
+            active_folder: folders.active_id(),
+            folder_name: folders.active_name(),
         }
     }
 
-    /// Write the current slots to disk. Call after any change.
+    /// Write the current folders to disk. Call after any change.
     pub fn persist(&self) {
-        self.slots.lock().unwrap().save(&self.store_file);
+        self.folders.lock().unwrap().save(&self.store_file);
     }
 }
 
@@ -83,7 +100,11 @@ impl AppState {
 #[serde(rename_all = "camelCase")]
 pub struct StateDto {
     pub mode: String,
+    /// The active folder's 9 slots.
     pub slots: Vec<SlotDto>,
+    pub folders: Vec<FolderDto>,
+    pub active_folder: u64,
+    pub folder_name: String,
 }
 
 // ---- Commands ----------------------------------------------------------------
@@ -109,7 +130,7 @@ fn set_mode(mode: String, state: State<'_, Arc<AppState>>) {
 /// normal Ctrl+V. Deliberately overwrites the current clipboard.
 #[tauri::command]
 fn copy_slot(index: usize, state: State<'_, Arc<AppState>>) -> bool {
-    let snap = state.slots.lock().unwrap().get_snapshot(index);
+    let snap = state.folders.lock().unwrap().get_snapshot(index);
     match snap {
         Some(s) => clipboard::restore(&s).is_ok(),
         None => false,
@@ -118,41 +139,83 @@ fn copy_slot(index: usize, state: State<'_, Arc<AppState>>) -> bool {
 
 #[tauri::command]
 fn clear_slot(index: usize, app: AppHandle, state: State<'_, Arc<AppState>>) {
-    state.slots.lock().unwrap().clear(index);
-    state.persist();
-    let _ = app.emit("state-updated", state.to_dto());
+    state.folders.lock().unwrap().clear(index);
+    sync(&app, state.inner());
 }
 
+/// Clear the **active** folder only. Other folders are untouched.
 #[tauri::command]
 fn clear_all(app: AppHandle, state: State<'_, Arc<AppState>>) {
     {
-        let mut slots = state.slots.lock().unwrap();
-        // Stash the pre-clear state so it can be restored via undo.
-        *state.last_cleared.lock().unwrap() = Some(slots.clone());
-        slots.clear_all();
+        let mut folders = state.folders.lock().unwrap();
+        // Stash the pre-clear slots, tagged with their folder, so undo can put
+        // them back even if the user switches folders in the meantime.
+        *state.last_cleared.lock().unwrap() =
+            Some((folders.active_id(), folders.active_slots_clone()));
+        folders.clear_all();
     }
-    state.persist();
-    let _ = app.emit("state-updated", state.to_dto());
+    sync(&app, state.inner());
 }
 
-/// Restore the slots to the snapshot taken before the last "clear all".
+/// Restore the slots taken before the last "clear all", into the folder they
+/// were cleared from. A no-op if that folder has since been deleted.
 #[tauri::command]
 fn undo_clear(app: AppHandle, state: State<'_, Arc<AppState>>) -> bool {
     let restored = {
         let mut buf = state.last_cleared.lock().unwrap();
         match buf.take() {
-            Some(prev) => {
-                *state.slots.lock().unwrap() = prev;
-                true
-            }
+            Some((id, prev)) => state.folders.lock().unwrap().replace_slots(id, prev),
             None => false,
         }
     };
     if restored {
-        state.persist();
-        let _ = app.emit("state-updated", state.to_dto());
+        sync(&app, state.inner());
     }
     restored
+}
+
+// ---- Folder commands ---------------------------------------------------------
+
+/// Create a folder and switch to it. Returns its id.
+#[tauri::command]
+fn create_folder(name: String, app: AppHandle, state: State<'_, Arc<AppState>>) -> u64 {
+    let id = state.folders.lock().unwrap().create(&name);
+    sync(&app, state.inner());
+    id
+}
+
+#[tauri::command]
+fn rename_folder(id: u64, name: String, app: AppHandle, state: State<'_, Arc<AppState>>) -> bool {
+    let ok = state.folders.lock().unwrap().rename(id, &name);
+    if ok {
+        sync(&app, state.inner());
+    }
+    ok
+}
+
+/// Delete a folder and everything in it. Refuses to remove the last one.
+#[tauri::command]
+fn delete_folder(id: u64, app: AppHandle, state: State<'_, Arc<AppState>>) -> bool {
+    let ok = state.folders.lock().unwrap().delete(id);
+    if ok {
+        // A pending undo aimed at this folder can never land now.
+        let mut buf = state.last_cleared.lock().unwrap();
+        if matches!(*buf, Some((cleared, _)) if cleared == id) {
+            *buf = None;
+        }
+        drop(buf);
+        sync(&app, state.inner());
+    }
+    ok
+}
+
+#[tauri::command]
+fn select_folder(id: u64, app: AppHandle, state: State<'_, Arc<AppState>>) -> bool {
+    let ok = state.folders.lock().unwrap().select(id);
+    if ok {
+        sync(&app, state.inner());
+    }
+    ok
 }
 
 #[tauri::command]
@@ -170,6 +233,35 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// Persist, push the new state to the frontend, and re-skin the tray. Call
+/// after any change to folders or slots.
+fn sync(app: &AppHandle, state: &Arc<AppState>) {
+    state.persist();
+    let _ = app.emit("state-updated", state.to_dto());
+    refresh_tray(app, state);
+}
+
+/// Rebuild the tray menu (the folder list is dynamic) and its tooltip.
+///
+/// IMPORTANT: this always runs on a spawned thread. Tauri's menu setters post a
+/// task to the main-thread event loop and then block waiting for it — so
+/// calling them *from* the main thread deadlocks, and menu-event handlers run
+/// on the main thread.
+fn refresh_tray(app: &AppHandle, state: &Arc<AppState>) {
+    let app = app.clone();
+    let state = state.clone();
+    std::thread::spawn(move || {
+        let Some(tray) = app.tray_by_id("cq-tray") else {
+            return;
+        };
+        if let Ok(menu) = tray_menu(&app, &state) {
+            let _ = tray.set_menu(Some(menu));
+        }
+        let name = state.folders.lock().unwrap().active_name();
+        let _ = tray.set_tooltip(Some(format!("CQ Paster — {name}")));
+    });
+}
+
 fn toggle_mode(app: &AppHandle, state: &Arc<AppState>) {
     {
         let mut m = state.mode.lock().unwrap();
@@ -181,25 +273,67 @@ fn toggle_mode(app: &AppHandle, state: &Arc<AppState>) {
     let _ = app.emit("state-updated", state.to_dto());
 }
 
-fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
-    use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
-    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+/// Build the tray menu. Rebuilt on every folder change, so the folder list and
+/// the active-folder labels stay current.
+fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{CheckMenuItemBuilder, IsMenuItem, MenuBuilder, MenuItemBuilder, Submenu};
     use tauri_plugin_autostart::ManagerExt;
 
+    let (folders, active_name) = {
+        let f = state.folders.lock().unwrap();
+        (f.folder_dtos(), f.active_name())
+    };
+
     let open_i = MenuItemBuilder::with_id("open", "Open control panel").build(app)?;
+
+    // Folder switcher. The submenu's own label carries the active folder, so the
+    // answer to "which folder am I in?" is visible without opening it.
+    let folder_items = folders
+        .iter()
+        .map(|f| {
+            CheckMenuItemBuilder::with_id(
+                format!("folder:{}", f.id),
+                format!("{}  ({}/9)", f.name, f.filled),
+            )
+            .checked(f.active)
+            .build(app)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let folder_refs: Vec<&dyn IsMenuItem<tauri::Wry>> = folder_items
+        .iter()
+        .map(|i| i as &dyn IsMenuItem<tauri::Wry>)
+        .collect();
+    let folder_sub = Submenu::with_items(app, format!("Folder: {active_name}"), true, &folder_refs)?;
+
     let mode_i = MenuItemBuilder::with_id("mode", "Toggle Master / Noob mode").build(app)?;
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart_i = CheckMenuItemBuilder::with_id("autostart", "Start on login")
         .checked(autostart_on)
         .build(app)?;
-    let clear_i = MenuItemBuilder::with_id("clear", "Clear all slots").build(app)?;
+    // Scoped to the active folder, and says so.
+    let clear_i =
+        MenuItemBuilder::with_id("clear", format!("Clear slots in \"{active_name}\"")).build(app)?;
     let quit_i = MenuItemBuilder::with_id("quit", "Quit CQ Paster").build(app)?;
-    let menu = MenuBuilder::new(app)
-        .items(&[&open_i, &mode_i, &autostart_i, &clear_i, &quit_i])
-        .build()?;
 
+    MenuBuilder::new(app)
+        .items(&[
+            &open_i,
+            &folder_sub,
+            &mode_i,
+            &autostart_i,
+            &clear_i,
+            &quit_i,
+        ])
+        .build()
+}
+
+fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri_plugin_autostart::ManagerExt;
+
+    let menu = tray_menu(app, &state)?;
     let menu_state = state.clone();
-    let autostart_item = autostart_i.clone();
+    let tooltip = format!("CQ Paster — {}", state.folders.lock().unwrap().active_name());
 
     // Match the tray icon to the taskbar's light/dark theme.
     #[cfg(windows)]
@@ -209,25 +343,43 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("cq-tray")
         .icon(tray_icon)
-        .tooltip("CQ Paster")
+        .tooltip(tooltip)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(move |app, event| match event.id().as_ref() {
-            "open" => show_main(app),
-            "mode" => toggle_mode(app, &menu_state),
-            "autostart" => {
-                let mgr = app.autolaunch();
-                let now = mgr.is_enabled().unwrap_or(false);
-                let _ = if now { mgr.disable() } else { mgr.enable() };
-                let _ = autostart_item.set_checked(!now);
+        .on_menu_event(move |app, event| {
+            let id = event.id().as_ref();
+            // Folder switch: ids are "folder:<id>".
+            if let Some(rest) = id.strip_prefix("folder:") {
+                if let Ok(fid) = rest.parse::<u64>() {
+                    if menu_state.folders.lock().unwrap().select(fid) {
+                        sync(app, &menu_state);
+                    }
+                }
+                return;
             }
-            "clear" => {
-                menu_state.slots.lock().unwrap().clear_all();
-                menu_state.persist();
-                let _ = app.emit("state-updated", menu_state.to_dto());
+            match id {
+                "open" => show_main(app),
+                "mode" => toggle_mode(app, &menu_state),
+                "autostart" => {
+                    let mgr = app.autolaunch();
+                    let now = mgr.is_enabled().unwrap_or(false);
+                    let _ = if now { mgr.disable() } else { mgr.enable() };
+                    // Rebuild rather than set_checked: the menu is regenerated
+                    // on folder changes anyway, and it re-reads the real state.
+                    refresh_tray(app, &menu_state);
+                }
+                "clear" => {
+                    {
+                        let mut folders = menu_state.folders.lock().unwrap();
+                        *menu_state.last_cleared.lock().unwrap() =
+                            Some((folders.active_id(), folders.active_slots_clone()));
+                        folders.clear_all();
+                    }
+                    sync(app, &menu_state);
+                }
+                "quit" => app.exit(0),
+                _ => {}
             }
-            "quit" => app.exit(0),
-            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -355,6 +507,10 @@ pub fn run() {
             clear_slot,
             clear_all,
             undo_clear,
+            create_folder,
+            rename_folder,
+            delete_folder,
+            select_folder,
             show_main_window
         ])
         .setup(move |app| {
@@ -385,7 +541,7 @@ pub fn run() {
             // and create the shared marker that the real installer checks.
             if !cfg!(debug_assertions) {
                 use tauri_plugin_autostart::ManagerExt;
-                let marker = slots_file().with_file_name("autostart.init");
+                let marker = data_dir().join("autostart.init");
                 if !marker.exists() {
                     let _ = handle.autolaunch().enable();
                     if let Some(dir) = marker.parent() {
