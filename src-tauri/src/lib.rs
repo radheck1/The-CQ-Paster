@@ -380,11 +380,19 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
     // Match the tray icon to the taskbar's light/dark theme.
     #[cfg(windows)]
     let tray_icon = tray_icon_image(system_uses_light_theme());
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let tray_icon = macos_tray_icon();
+    #[cfg(not(any(windows, target_os = "macos")))]
     let tray_icon = app.default_window_icon().unwrap().clone();
 
-    TrayIconBuilder::with_id("cq-tray")
-        .icon(tray_icon)
+    let builder = TrayIconBuilder::with_id("cq-tray").icon(tray_icon);
+
+    // Template image: macOS tints it for the current menu-bar appearance, so
+    // macOS needs no equivalent of the Windows `spawn_theme_watcher` polling.
+    #[cfg(target_os = "macos")]
+    let builder = builder.icon_as_template(true);
+
+    builder
         .tooltip(tooltip)
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -446,6 +454,19 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
     }
 
     Ok(())
+}
+
+/// The menu-bar icon.
+///
+/// Registered as a template image (see `icon_as_template` in `build_tray`), so
+/// macOS tints it to match the menu bar automatically — light, dark, and the
+/// inverted state while the menu is open, which manual light/dark swapping gets
+/// wrong. Template images are drawn from alpha alone, so the black artwork is
+/// the correct source for every appearance and `tray-white.png` is unused here.
+#[cfg(target_os = "macos")]
+fn macos_tray_icon() -> tauri::image::Image<'static> {
+    static BLACK: &[u8] = include_bytes!("../icons/tray-black.png");
+    tauri::image::Image::from_bytes(BLACK).expect("decode tray icon")
 }
 
 /// Read the taskbar (system) light/dark setting. True = light taskbar.
