@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{is_sensitive, init_thread, preview, restore, snapshot, text_only};
+// ClipItem/ClipType are re-exported for `slots.rs`'s test helpers, which build
+// a snapshot directly; only ClipSnapshot is needed by non-test code.
 #[cfg(target_os = "macos")]
+#[allow(unused_imports)]
 pub use macos::{ClipItem, ClipSnapshot, ClipType};
 
 /// One clipboard format: the Windows format id and its raw bytes.

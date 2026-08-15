@@ -27,7 +27,12 @@ use super::{trim_preview, SlotPreview};
 
 pub const UTI_TEXT: &str = "public.utf8-plain-text";
 pub const UTI_TEXT16: &str = "public.utf16-external-plain-text";
+// Named for the record: these are the rich-text types `text_only` deliberately
+// drops. Nothing reads them, because it works from a keep-list of text types
+// rather than a drop-list — a new rich type must not silently survive.
+#[allow(dead_code)]
 pub const UTI_HTML: &str = "public.html";
+#[allow(dead_code)]
 pub const UTI_RTF: &str = "public.rtf";
 pub const UTI_PNG: &str = "public.png";
 pub const UTI_TIFF: &str = "public.tiff";

@@ -14,9 +14,17 @@ pub fn start(app: tauri::AppHandle, state: std::sync::Arc<crate::AppState>) {
     windows_impl::start(app, state);
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod macos;
+
+#[cfg(target_os = "macos")]
+pub fn start(app: tauri::AppHandle, state: std::sync::Arc<crate::AppState>) {
+    macos::start(app, state);
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn start(_app: tauri::AppHandle, _state: std::sync::Arc<crate::AppState>) {
-    // Hook backend for non-Windows platforms is not implemented yet.
+    // Hook backend for other platforms is not implemented.
 }
 
 #[cfg(windows)]
