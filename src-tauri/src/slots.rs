@@ -343,15 +343,49 @@ impl FolderStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clipboard::{ClipFormat, ClipSnapshot};
+    use crate::clipboard::ClipSnapshot;
 
+    /// A minimal one-text snapshot.
+    ///
+    /// The two platforms model a clipboard differently — Windows as a flat map
+    /// of numeric format ids, macOS as a list of items each holding string UTIs
+    /// — so only this constructor is platform-specific. Every test below cares
+    /// solely that a snapshot survives a store/load round trip, not what is in
+    /// it, so the rest of the module stays shared.
+    #[cfg(not(target_os = "macos"))]
     fn snap(text: &str) -> ClipSnapshot {
+        use crate::clipboard::ClipFormat;
         ClipSnapshot {
             formats: vec![ClipFormat {
                 id: 1,
                 data: text.as_bytes().to_vec(),
             }],
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn snap(text: &str) -> ClipSnapshot {
+        use crate::clipboard::{ClipItem, ClipType};
+        ClipSnapshot {
+            items: vec![ClipItem {
+                types: vec![ClipType {
+                    uti: "public.utf8-plain-text".into(),
+                    data: text.as_bytes().to_vec(),
+                }],
+            }],
+        }
+    }
+
+    /// The bytes [`snap`] stored, read back without the test needing to know
+    /// which platform's snapshot shape they landed in.
+    #[cfg(not(target_os = "macos"))]
+    fn payload(snap: &ClipSnapshot) -> Vec<u8> {
+        snap.formats[0].data.clone()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn payload(snap: &ClipSnapshot) -> Vec<u8> {
+        snap.items[0].types[0].data.clone()
     }
 
     fn preview(text: &str) -> SlotPreview {
@@ -402,8 +436,8 @@ mod tests {
         assert_eq!(store.folder_dtos().len(), 1);
         assert_eq!(store.active_name(), DEFAULT_FOLDER);
         assert_eq!(store.folder_dtos()[0].filled, 2);
-        assert_eq!(store.get_snapshot(1).unwrap().formats[0].data, b"first");
-        assert_eq!(store.get_snapshot(9).unwrap().formats[0].data, b"ninth");
+        assert_eq!(payload(&store.get_snapshot(1).unwrap()), b"first");
+        assert_eq!(payload(&store.get_snapshot(9).unwrap()), b"ninth");
         assert!(store.get_snapshot(5).is_none());
     }
 
@@ -422,7 +456,7 @@ mod tests {
         store.save(&modern);
 
         let loaded = FolderStore::load(&modern, &legacy);
-        assert_eq!(loaded.get_snapshot(1).unwrap().formats[0].data, b"current");
+        assert_eq!(payload(&loaded.get_snapshot(1).unwrap()), b"current");
     }
 
     /// Folders must not share slots.
@@ -442,7 +476,7 @@ mod tests {
 
         store.select(main);
         assert_eq!(
-            store.get_snapshot(1).unwrap().formats[0].data,
+            payload(&store.get_snapshot(1).unwrap()),
             b"in main",
             "clearing Work must not touch Main"
         );
@@ -521,7 +555,7 @@ mod tests {
         assert!(store.replace_slots(main, stashed));
 
         store.select(main);
-        assert_eq!(store.get_snapshot(1).unwrap().formats[0].data, b"saved");
+        assert_eq!(payload(&store.get_snapshot(1).unwrap()), b"saved");
     }
 
     #[test]

@@ -21,6 +21,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Tauri already pulls these in on macOS; pinning the same majors keeps one copy.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem"] }
+objc2-foundation = { version = "0.3", features = [
+  "NSArray",
+  "NSString",
+  "NSData",
+  "NSURL",
+] }
+
 [target.'cfg(windows)'.dependencies]
 rdev = { version = "0.5", features = ["unstable_grab"] }
 clipboard-win = "5"

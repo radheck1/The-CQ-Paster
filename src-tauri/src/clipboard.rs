@@ -9,7 +9,19 @@
 
 use serde::{Deserialize, Serialize};
 
+// macOS models the pasteboard as a list of *items*, each with its own set of
+// string UTIs, so it cannot reuse the flat format-id map below. Its types and
+// impls live in the submodule and are re-exported under the same names, which
+// keeps `slots.rs` and `hook.rs` platform-agnostic.
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::{is_sensitive, init_thread, preview, restore, snapshot, text_only};
+#[cfg(target_os = "macos")]
+pub use macos::{ClipItem, ClipSnapshot, ClipType};
+
 /// One clipboard format: the Windows format id and its raw bytes.
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ClipFormat {
     pub id: u32,
@@ -17,11 +29,13 @@ pub struct ClipFormat {
 }
 
 /// A full snapshot of every (memory-backed) clipboard format at a point in time.
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct ClipSnapshot {
     pub formats: Vec<ClipFormat>,
 }
 
+#[cfg(not(target_os = "macos"))]
 impl ClipSnapshot {
     pub fn is_empty(&self) -> bool {
         self.formats.is_empty()
@@ -46,24 +60,38 @@ pub struct SlotPreview {
 }
 
 // Standard clipboard format ids (winuser.h).
+#[cfg(not(target_os = "macos"))]
 const CF_TEXT: u32 = 1;
+#[cfg(not(target_os = "macos"))]
 const CF_BITMAP: u32 = 2;
+#[cfg(not(target_os = "macos"))]
 const CF_METAFILEPICT: u32 = 3;
+#[cfg(not(target_os = "macos"))]
 const CF_DIB: u32 = 8;
+#[cfg(not(target_os = "macos"))]
 const CF_PALETTE: u32 = 9;
+#[cfg(not(target_os = "macos"))]
 const CF_ENHMETAFILE: u32 = 14;
+#[cfg(not(target_os = "macos"))]
 const CF_HDROP: u32 = 15;
+#[cfg(not(target_os = "macos"))]
 const CF_UNICODETEXT: u32 = 13;
+#[cfg(not(target_os = "macos"))]
 const CF_DIBV5: u32 = 17;
+#[cfg(not(target_os = "macos"))]
 const CF_OWNERDISPLAY: u32 = 0x0080;
+#[cfg(not(target_os = "macos"))]
 const CF_DSPBITMAP: u32 = 0x0082;
+#[cfg(not(target_os = "macos"))]
 const CF_DSPMETAFILEPICT: u32 = 0x0083;
+#[cfg(not(target_os = "macos"))]
 const CF_DSPENHMETAFILE: u32 = 0x008E;
 
 /// Formats whose clipboard data is a GDI/handle object rather than a plain
 /// GlobalAlloc block. GlobalLock-ing these gives meaningless bytes, so we skip
 /// them on capture and rely on the memory-backed equivalents (CF_DIB/CF_DIBV5
 /// carry the image; CF_HDROP carries files).
+#[cfg(not(target_os = "macos"))]
 fn is_handle_format(id: u32) -> bool {
     matches!(
         id,
@@ -94,6 +122,7 @@ pub fn snapshot() -> Result<ClipSnapshot, String> {
 /// Return a snapshot containing only the plain-text formats, dropping HTML,
 /// RTF, images, and everything else — for a "paste without formatting". Returns
 /// None if the slot carries no text at all (e.g. an image or file list).
+#[cfg(not(target_os = "macos"))]
 pub fn text_only(snap: &ClipSnapshot) -> Option<ClipSnapshot> {
     const CF_OEMTEXT: u32 = 7;
     const CF_LOCALE: u32 = 16;
@@ -491,17 +520,18 @@ fn format_name(id: u32) -> Option<String> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn snapshot() -> Result<ClipSnapshot, String> {
     Err("clipboard capture not implemented on this platform".into())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn restore(_snap: &ClipSnapshot) -> Result<(), String> {
     Err("clipboard restore not implemented on this platform".into())
 }
 
 /// Build a small preview from a snapshot for display purposes.
+#[cfg(not(target_os = "macos"))]
 pub fn preview(snap: &ClipSnapshot) -> SlotPreview {
     let bytes: usize = snap.formats.iter().map(|f| f.data.len()).sum();
 
@@ -576,6 +606,7 @@ fn trim_preview(s: &str) -> String {
     out
 }
 
+#[cfg(not(target_os = "macos"))]
 fn utf16_to_string(data: &[u8]) -> String {
     let u16s: Vec<u16> = data
         .chunks_exact(2)
@@ -586,6 +617,7 @@ fn utf16_to_string(data: &[u8]) -> String {
 }
 
 /// Read width/height from a BITMAPINFOHEADER (CF_DIB) or BITMAPV5HEADER.
+#[cfg(not(target_os = "macos"))]
 fn dib_dimensions(data: &[u8]) -> (Option<i32>, Option<i32>) {
     if data.len() < 12 {
         return (None, None);
@@ -597,6 +629,7 @@ fn dib_dimensions(data: &[u8]) -> (Option<i32>, Option<i32>) {
 
 /// Parse a CF_HDROP payload (a DROPFILES header followed by a double-null
 /// terminated list of paths) into file path strings.
+#[cfg(not(target_os = "macos"))]
 fn parse_hdrop(data: &[u8]) -> Vec<String> {
     if data.len() < 20 {
         return Vec::new();
