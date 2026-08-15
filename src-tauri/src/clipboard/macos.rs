@@ -640,6 +640,84 @@ mod tests {
         assert_eq!(preview(&read_back).files.len(), 3);
     }
 
+    /// Reading a multi-item file pasteboard that something else wrote.
+    ///
+    /// The sibling round-trip test writes with our own `restore`, so it cannot
+    /// catch a shared misunderstanding of the API. This one reads a pasteboard
+    /// laid down by the standalone diagnostic instead:
+    ///
+    /// ```text
+    /// pbdiag synth-files /tmp/cqtest/a.txt /tmp/cqtest/b.txt /tmp/cqtest/c.txt
+    /// ```
+    #[test]
+    #[ignore = "needs pbdiag synth-files to have written the 3-file fixture"]
+    fn live_reads_a_multi_item_file_pasteboard() {
+        let _guard = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+
+        let snap = snapshot().expect("snapshot");
+        assert_eq!(snap.items.len(), 3, "one item per file");
+        assert!(snap.is_complete());
+
+        let p = preview(&snap);
+        assert_eq!(p.kind, "files");
+        assert_eq!(p.files.len(), 3, "every file listed, got {:?}", p.files);
+        for (n, expected) in ["a.txt", "b.txt", "c.txt"].iter().enumerate() {
+            assert!(
+                p.files[n].ends_with(expected),
+                "file {n} should be {expected}, got {}",
+                p.files[n]
+            );
+        }
+
+        // Guards the promised-data fallback: it may only consult the
+        // pasteboard-level read for the first item declaring a UTI, or every
+        // item here would collapse onto a.txt.
+        let urls: Vec<&str> = snap
+            .items
+            .iter()
+            .map(|i| std::str::from_utf8(i.find(UTI_FILE_URL).unwrap()).unwrap())
+            .collect();
+        assert!(urls[1].ends_with("b.txt"), "item 1 kept its own url: {urls:?}");
+        assert!(urls[2].ends_with("c.txt"), "item 2 kept its own url: {urls:?}");
+
+        // A file list carries no text, so a plain-text paste must decline.
+        assert!(text_only(&snap).is_none());
+    }
+
+    /// Image capture, against a real system-written pasteboard.
+    ///
+    /// Set the fixture up first — this deliberately does not write the image
+    /// itself, so the capture is tested against AppKit's own encoding rather
+    /// than our restore path:
+    ///
+    /// ```text
+    /// sips -z 137 241 some.png --out /tmp/cqtest/shot.png
+    /// osascript -e 'set the clipboard to (read (POSIX file "/tmp/cqtest/shot.png") as «class PNGf»)'
+    /// ```
+    #[test]
+    #[ignore = "needs the 241x137 fixture image on the real clipboard"]
+    fn live_image_captures_and_survives_a_round_trip() {
+        let _guard = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+
+        let snap = snapshot().expect("snapshot");
+        assert!(snap.is_complete(), "image capture should be complete");
+        let p = preview(&snap);
+        assert_eq!(p.kind, "image");
+        assert_eq!((p.width, p.height), (Some(241), Some(137)), "IHDR dimensions");
+        assert!(p.bytes > 1000, "real payload, got {} bytes", p.bytes);
+
+        // An image carries no text, so a plain-text paste must decline rather
+        // than hand back an empty snapshot.
+        assert!(text_only(&snap).is_none());
+
+        restore(&snap).expect("restore");
+        let back = snapshot().expect("re-snapshot");
+        let p2 = preview(&back);
+        assert_eq!(p2.kind, "image");
+        assert_eq!((p2.width, p2.height), (Some(241), Some(137)));
+        assert_eq!(p2.bytes, p.bytes, "byte-identical round trip");
+    }
+
     /// A transient type must not survive into the pasteboard, but the types
     /// alongside it must.
     #[test]
