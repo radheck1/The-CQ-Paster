@@ -1,6 +1,6 @@
 [package]
 name = "cq-paster"
-version = "0.5.0"
+version = "0.5.1"
 description = "CQ Paster - an ultra-minimal multi-slot clipboard manager"
 authors = ["Garrett"]
 edition = "2021"

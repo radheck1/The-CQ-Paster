@@ -456,9 +456,36 @@ unless asked.
 
 ### Publishing a release
 
-Windows releases are published to GitHub Releases with the installer attached.
-Match that: tag `vX.Y.Z`, attach the `.dmg`. Ask before publishing — the user
-drives release timing.
+Windows releases go to GitHub Releases with the installer attached. **A slot has
+already been prepared for the macOS build** — do not create a competing release
+scheme.
+
+**Where the `.dmg` goes:** attach it to the existing release for the version you
+build against, alongside the Windows `.exe`. One release, both platforms' assets.
+Name it to match the Windows convention:
+
+```
+CQ_Paster_0.5.1_x64-setup.exe          <- existing Windows asset
+CQ_Paster_0.5.1_universal.dmg          <- add the macOS asset like this
+```
+
+If the port lands on a later version, cut a new tag and include **both**
+platforms' installers in that release.
+
+**Two places must be updated when the Mac build first ships**, both of which
+currently say "in development":
+
+1. **`README.md`** — the *Downloads* table at the top (change the macOS row from
+   🚧 to ✅ with a version and download link), and the *macOS (in development)*
+   section heading. The "How the two versions will differ" table there is already
+   written and should stay — it explains ⌘ vs Ctrl, `.dmg` vs `.exe`, Gatekeeper
+   vs SmartScreen, and the Accessibility/Input Monitoring requirement.
+2. **The GitHub release notes** — the current release has a **macOS — coming
+   soon** section. Replace it with real install instructions, including the
+   Gatekeeper workaround and the permissions the user must grant.
+
+**Ask before publishing.** The user drives release timing, and releases are
+public.
 
 ---
 
