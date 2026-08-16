@@ -31,6 +31,17 @@ type StateDto = {
 const label = getCurrentWindow().label;
 const app = document.getElementById("app")!;
 
+/**
+ * macOS gets the system traffic lights and ⌘; Windows keeps its own title bar
+ * buttons and Ctrl. Detected here rather than passed down from Rust so the
+ * shipping Windows build's backend is untouched — on Windows every string below
+ * renders exactly as it did before.
+ */
+const IS_MAC = navigator.userAgent.includes("Mac");
+/** The trigger key, as the user should see it written. */
+const MOD = IS_MAC ? "⌘" : "Ctrl";
+document.documentElement.dataset.platform = IS_MAC ? "macos" : "other";
+
 // Undo-after-clear: how long the Undo button stays offered, and its state.
 const UNDO_MS = 10000;
 const svg = (body: string, size = 13) =>
@@ -123,7 +134,7 @@ function renderPopup(state: StateDto) {
         )}</span>
       </div>
       <ul class="popup-list">${rows}</ul>
-      <div class="popup-foot">Ctrl+N+C copy · Ctrl+N+V paste · +Shift = plain text</div>
+      <div class="popup-foot">${MOD}+N+C copy · ${MOD}+N+V paste · +Shift = plain text</div>
     </div>`;
 }
 
@@ -322,12 +333,12 @@ function renderMain(state: StateDto) {
       const meta = filled
         ? `<div class="s-desc">${escapeHtml(describe(s.preview))}</div>
            <div class="s-kind">${s.preview!.kind} · ${fmtBytes(s.preview!.bytes)}</div>`
-        : `<div class="s-desc empty">empty... <b>Ctrl+${s.index}+C</b> to fill</div>`;
+        : `<div class="s-desc empty">empty... <b>${MOD}+${s.index}+C</b> to fill</div>`;
       const clearBtn = filled
         ? `<button class="s-clear" data-clear="${s.index}" title="Clear slot ${s.index}">✕</button>`
         : "";
       const copiedOverlay = filled
-        ? `<div class="s-copied">✓ Copied — press Ctrl+V to paste</div>`
+        ? `<div class="s-copied">✓ Copied — press ${MOD}+V to paste</div>`
         : "";
       return `
         <div class="slot ${filled ? "filled" : ""}" data-index="${s.index}"${
@@ -368,10 +379,10 @@ function renderMain(state: StateDto) {
           <div class="info" tabindex="0" role="button" aria-label="Shortcuts and help">
             <span class="info-q" aria-hidden="true">?</span>
             <div class="info-pop" role="tooltip">
-              <b>Ctrl+&lt;N&gt;+C</b> copies into slot N<br />
-              <b>Ctrl+&lt;N&gt;+V</b> pastes it (add <b>Shift</b> to paste as plain text)<br />
-              Plain Ctrl+C / Ctrl+V still work normally.<br />
-              <b>Click any slot</b> to load it onto the clipboard, then paste with Ctrl+V.
+              <b>${MOD}+&lt;N&gt;+C</b> copies into slot N<br />
+              <b>${MOD}+&lt;N&gt;+V</b> pastes it (add <b>Shift</b> to paste as plain text)<br />
+              Plain ${MOD}+C / ${MOD}+V still work normally.<br />
+              <b>Click any slot</b> to load it onto the clipboard, then paste with ${MOD}+V.
               <br /><br />
               <b>Folders</b> each hold their own 9 slots — hotkeys, Clear all and Undo
               apply only to the folder you're in.

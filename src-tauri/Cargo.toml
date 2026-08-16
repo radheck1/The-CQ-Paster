@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
@@ -22,9 +22,22 @@ serde_json = "1"
 bincode = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Window transparency needs both the config flag and this Cargo feature. Adding
+# it here rather than to the shared `tauri` dependency keeps the Windows build's
+# feature set exactly as it was.
+tauri = { version = "2", features = ["macos-private-api"] }
 # Tauri already pulls these in on macOS; pinning the same majors keeps one copy.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem"] }
+objc2-app-kit = { version = "0.3", features = [
+  "NSPasteboard",
+  "NSPasteboardItem",
+  "NSWindow",
+  "NSResponder",
+  "NSButton",
+  "NSControl",
+  "NSView",
+  "NSColor",
+] }
 objc2-foundation = { version = "0.3", features = [
   "NSArray",
   "NSString",

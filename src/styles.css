@@ -812,3 +812,53 @@ button {
   padding: 6px 12px 9px;
   border-top: 1px solid var(--line);
 }
+
+/* ===== macOS ==================================================================
+
+   Scoped to `[data-platform="macos"]` so the shipping Windows build renders
+   exactly as it did before. Windows draws its own title bar and its own
+   minimise/close buttons; macOS uses the system traffic lights instead, with
+   the window's content extending up behind them.
+   ============================================================================ */
+
+/* The system traffic lights occupy the top-left, so the web view's own buttons
+   would be a duplicate set. */
+[data-platform="macos"] .titlebar-controls {
+  display: none;
+}
+
+/* Centre the brand the way a native window centres its title. The left pad
+   clears the traffic lights; the right pad matches it so the centring is true
+   rather than optical. */
+[data-platform="macos"] .titlebar {
+  height: 38px;
+  justify-content: center;
+  padding: 0 72px;
+}
+
+[data-platform="macos"] .titlebar-brand {
+  padding-left: 0;
+}
+
+/* ===== macOS: cursor popup ===== */
+
+/* No drop shadow: the popup sits directly over whatever the user is working on
+   and the shadow read as a heavy dark box around it. */
+[data-platform="macos"] .popup {
+  box-shadow: none;
+  /* Stronger blur to compensate — the frosting, not a shadow, is what separates
+     the popup from the content behind it. */
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+/* Clearly see-through, leaning on the blur above to keep previews readable. */
+[data-platform="macos"] {
+  --popup-bg: rgba(255, 255, 255, 0.75);
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-platform="macos"] {
+    --popup-bg: rgba(25, 22, 20, 0.72);
+  }
+}

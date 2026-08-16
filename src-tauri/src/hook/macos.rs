@@ -49,8 +49,15 @@ const INJECT_GUARD_MS: u64 = 40;
 /// the handed-back content instead of the slot; too long and a quick plain
 /// Cmd+V lands before the handback.
 const PASTE_HANDBACK_DELAY: Duration = Duration::from_millis(180);
-/// Popup auto-hide delay after the last chord activity.
-const POPUP_HIDE_MS: u64 = 2200;
+/// How often the popup re-reads the cursor while it is up. 30Hz reads as
+/// attached to the pointer while halving the main-thread traffic, since each
+/// reposition has to hop to the main thread. The `CGEventCreate` per tick
+/// happens on a worker thread, never in the tap callback.
+const POPUP_FOLLOW: Duration = Duration::from_millis(33);
+/// Safety net for a popup that is never told to hide. The Cmd release can be
+/// missed while a synthetic paste is in flight (the same hazard 6.2 describes),
+/// and a popup stuck on screen forever is far worse than one that vanishes late.
+const POPUP_MAX_VISIBLE: Duration = Duration::from_secs(10);
 /// How often to re-check for Accessibility permission before the tap exists.
 const PERMISSION_POLL: Duration = Duration::from_secs(2);
 
@@ -114,6 +121,7 @@ extern "C" {
     fn CGEventSetFlags(event: CGEventRef, flags: u64);
     fn CGEventPost(tap: u32, event: CGEventRef);
     fn CGEventSourceCreate(state: i32) -> CGEventSourceRef;
+    fn CGEventCreate(source: CGEventSourceRef) -> CGEventRef;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -174,6 +182,8 @@ enum Action {
     Copy(usize),
     /// Cmd+<N>+V: paste slot N. `plain` (Shift held) strips formatting.
     Paste(usize, bool),
+    /// Cmd released: the chord is over, so the popup comes down.
+    ChordEnd,
 }
 
 /// Everything the callback needs, reached through the tap's `user_info`
@@ -342,12 +352,19 @@ extern "C" fn tap_callback(
     let flags = unsafe { CGEventGetFlags(event) };
     let keycode = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) };
 
-    // A fresh Cmd press begins a new chord: forget any leftover digit so a
-    // plain Cmd+C / Cmd+V can never reuse a stale slot.
     if event_type == KCG_EVENT_FLAGS_CHANGED {
-        if is_command_key(keycode) && (flags & KCG_FLAG_MASK_COMMAND) != 0 {
-            ctx.pending_slot.store(0, Ordering::SeqCst);
-            CHORD_RESETS.fetch_add(1, Ordering::Relaxed);
+        if is_command_key(keycode) {
+            if (flags & KCG_FLAG_MASK_COMMAND) != 0 {
+                // A fresh Cmd press begins a new chord: forget any leftover
+                // digit so a plain Cmd+C / Cmd+V can never reuse a stale slot.
+                ctx.pending_slot.store(0, Ordering::SeqCst);
+                CHORD_RESETS.fetch_add(1, Ordering::Relaxed);
+            } else {
+                // Cmd released — the chord is over and the popup comes down.
+                // Sent unconditionally rather than only after a digit: cheap,
+                // and it means a missed arm can't strand the popup on screen.
+                let _ = ctx.tx.send(Action::ChordEnd);
+            }
         }
         return event;
     }
@@ -511,8 +528,9 @@ fn worker(
         match action {
             Action::Peek(slot, x, y) => {
                 trace(&format!("digit {slot} armed"));
-                show_activity(&app, &state, Some((x, y)));
+                show_popup(&app, &state, (x, y));
             }
+            Action::ChordEnd => hide_popup(&app, &state),
             Action::Copy(slot) => {
                 trace(&format!("COPY -> slot {slot}"));
                 if clipboard::is_sensitive() {
@@ -531,7 +549,7 @@ fn worker(
                 state.folders.lock().unwrap().set(slot, snap, preview);
                 state.persist();
                 crate::refresh_tray(&app, &state); // fill counts changed
-                show_activity(&app, &state, None);
+                refresh_state(&app, &state);
             }
             Action::Paste(slot, plain) => {
                 trace(&format!("PASTE <- slot {slot} (plain={plain})"));
@@ -590,42 +608,111 @@ fn worker(
 }
 
 /// Refresh frontend state and, in Noob mode, show/keep the cursor popup.
-fn show_activity(app: &AppHandle, state: &Arc<AppState>, at: Option<(f64, f64)>) {
+/// Push fresh state to the frontend without touching the popup's visibility.
+fn refresh_state(app: &AppHandle, state: &Arc<AppState>) {
     let _ = app.emit("state-updated", state.to_dto());
+}
+
+/// Show the reference popup and keep it pinned to the cursor until the chord
+/// ends.
+///
+/// The popup stays up for as long as Cmd is held rather than expiring on a
+/// timer: it is a reference card, and it is worth reading precisely while the
+/// user is still deciding which slot they want.
+fn show_popup(app: &AppHandle, state: &Arc<AppState>, at: (f64, f64)) {
+    refresh_state(app, state);
 
     if *state.mode.lock().unwrap() != Mode::Noob {
         return;
     }
-    if let Some(win) = app.get_webview_window("popup") {
-        if let Some((x, y)) = at {
-            // CGEvent coordinates are in points, not physical pixels, so this
-            // must be a LogicalPosition — a PhysicalPosition would land at
-            // double the intended offset on a Retina display.
-            let _ = win.set_position(tauri::LogicalPosition::new(x + 64.0, y + 100.0));
-        }
-        let _ = win.show();
-    }
+    let Some(win) = app.get_webview_window("popup") else {
+        return;
+    };
+    position_popup(&win, at);
+    let _ = win.show();
+    raise_popup(app);
 
-    // Reset the auto-hide timer using a generation counter.
-    let gen = state.popup_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    // One follower per chord. The generation counter cancels the previous one,
+    // so a second digit does not leave two threads fighting over the position.
+    let generation = state.popup_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let app = app.clone();
     let state = state.clone();
     thread::spawn(move || {
-        thread::sleep(Duration::from_millis(POPUP_HIDE_MS));
-        if state.popup_gen.load(Ordering::SeqCst) == gen {
-            if let Some(win) = app.get_webview_window("popup") {
-                let _ = win.hide();
+        let started = std::time::Instant::now();
+        while state.popup_gen.load(Ordering::SeqCst) == generation {
+            if started.elapsed() > POPUP_MAX_VISIBLE {
+                hide_popup(&app, &state);
+                return;
             }
+            if let Some(win) = app.get_webview_window("popup") {
+                position_popup(&win, cursor_location());
+            }
+            thread::sleep(POPUP_FOLLOW);
+        }
+        // A newer generation owns the popup now; leave it alone.
+    });
+}
+
+/// Apply the floating window style and order the popup in front.
+///
+/// These are raw `NSWindow` calls, and AppKit requires them on the main thread —
+/// this runs on the worker, so they are marshalled rather than called directly.
+/// Doing it directly terminated the process the first time a chord fired.
+///
+/// `run_on_main_thread` posts and returns; it does not block. That distinction
+/// matters here: the blocking main-thread helpers behind Tauri's menu setters
+/// deadlock when called from the main thread (MACOS_PORT.md 7), which is why
+/// `refresh_tray` spawns. This is the non-blocking API and is safe from a
+/// worker.
+fn raise_popup(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(win) = handle.get_webview_window("popup") else {
+            return;
+        };
+        let applied = crate::make_popup_float(&win);
+        // Order in without activating: `orderFront:` can be dropped for an
+        // Accessory app when the active Space is another app's full-screen
+        // window, which is exactly when the popup was going missing.
+        crate::order_popup_front(&win);
+        match applied {
+            Some((level, behavior)) => {
+                trace(&format!("  popup level={level} behavior={behavior:#x}"))
+            }
+            None => trace("  popup: could not reach its NSWindow"),
         }
     });
 }
 
-/// Synthesise `Cmd+V` into the focused app.
-///
-/// The flags are set explicitly to Command alone. For a plain-text paste the
-/// user is physically holding Shift, and a target seeing `Cmd+Shift+V` would
-/// open paste-special in some apps — setting the flags outright is the macOS
-/// equivalent of the Windows code releasing Shift before injecting.
+/// Park the popup below-right of the cursor, clear of what is being worked on.
+fn position_popup(win: &tauri::WebviewWindow, (x, y): (f64, f64)) {
+    // CGEvent coordinates are in points, not physical pixels, so this must be a
+    // LogicalPosition — a PhysicalPosition would land at double the intended
+    // offset on a Retina display.
+    let _ = win.set_position(tauri::LogicalPosition::new(x + 64.0, y + 100.0));
+}
+
+fn hide_popup(app: &AppHandle, state: &Arc<AppState>) {
+    // Bumping the generation retires any follower still running.
+    state.popup_gen.fetch_add(1, Ordering::SeqCst);
+    if let Some(win) = app.get_webview_window("popup") {
+        let _ = win.hide();
+    }
+}
+
+/// Current pointer position, in points.
+fn cursor_location() -> (f64, f64) {
+    unsafe {
+        let ev = CGEventCreate(std::ptr::null_mut());
+        if ev.is_null() {
+            return (0.0, 0.0);
+        }
+        let p = CGEventGetLocation(ev);
+        CFRelease(ev as CFTypeRef);
+        (p.x, p.y)
+    }
+}
+
 fn inject_paste() {
     unsafe {
         let source = CGEventSourceCreate(KCG_EVENT_SOURCE_HID_SYSTEM_STATE);

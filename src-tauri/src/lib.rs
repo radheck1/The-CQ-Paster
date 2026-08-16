@@ -528,6 +528,153 @@ fn spawn_theme_watcher(app: AppHandle) {
     });
 }
 
+/// Let the popup appear over full-screen apps and on every Space.
+///
+/// Unlike Windows, macOS needs nothing done about activation: the popup is
+/// declared `"focus": false`, which already stops it becoming key, so there is
+/// no counterpart to `make_non_activating` here — verified by pasting into a
+/// focused text field with the popup up and watching the caret keep blinking.
+///
+/// What macOS *does* need is collection behaviour. "Always on top" only orders
+/// the window within its own Space, so without `FullScreenAuxiliary` the popup
+/// silently fails to draw over a full-screen app — exactly when the user is
+/// most focused on one thing.
+/// The level the popup sits at.
+///
+/// `NSStatusWindowLevel` (25) is not enough to clear another app's full-screen
+/// Space, so this uses `NSPopUpMenuWindowLevel` — the level menus themselves
+/// use, which is the behaviour wanted here: visible over anything, including a
+/// full-screen window belonging to a different application.
+#[cfg(target_os = "macos")]
+const POPUP_WINDOW_LEVEL: isize = 101;
+
+/// Apply the floating behaviour, and report what actually stuck.
+///
+/// Called on every show, not just at startup: Tauri applies its own
+/// `alwaysOnTop` handling (which sets `NSFloatingWindowLevel`, well below what
+/// is needed here) and re-asserting afterwards is cheaper than depending on the
+/// ordering between the two.
+#[cfg(target_os = "macos")]
+pub(crate) fn make_popup_float(win: &tauri::WebviewWindow) -> Option<(isize, usize)> {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let ptr = win.ns_window().ok()?;
+    if ptr.is_null() {
+        return None;
+    }
+    let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+    // `CanJoinAllSpaces` puts the popup on every Space including full-screen
+    // ones; `FullScreenAuxiliary` lets it coexist with a full-screen window
+    // rather than forcing a Space switch. `Stationary` is deliberately absent —
+    // it pins a window to its Space, which is the opposite of what is wanted.
+    ns.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    ns.setLevel(POPUP_WINDOW_LEVEL);
+    Some((ns.level(), ns.collectionBehavior().0 as usize))
+}
+
+/// Give the control panel a native macOS title bar.
+///
+/// The window is declared `decorations: false` in the shared config, which is
+/// right for Windows — it draws its own title bar with its own buttons. macOS
+/// instead gets the system traffic lights, floating over content that extends
+/// up behind them, which is also what makes the window corners round without
+/// any CSS involvement.
+///
+/// Done at runtime rather than in `tauri.conf.json` so the shipping Windows
+/// build reads exactly the config it reads today.
+///
+/// Must run on the main thread; `setup` already does.
+#[cfg(target_os = "macos")]
+fn make_native_titlebar(app: &AppHandle) {
+    use objc2_app_kit::{
+        NSColor, NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
+    };
+
+    // The style mask is composed here rather than by asking Tauri for
+    // decorations. `set_decorations(true)` does not apply in time to be built
+    // on: reading the mask afterwards showed Titled and Closable still absent,
+    // so `standardWindowButton` found no buttons to hide and the overlay style
+    // was applied to a window that later grew its own separate title bar —
+    // visible as a white strip above the dark one, with a live zoom button.
+    //
+    // Still deferred to a later turn of the event loop so it runs after the
+    // window is fully on screen.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(win) = handle.get_webview_window("main") else {
+            return;
+        };
+        let Ok(ptr) = win.ns_window() else { return };
+        if ptr.is_null() {
+            return;
+        }
+        let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+
+        // Titled gives the traffic lights; FullSizeContentView lets the web
+        // view run up behind them, so the dark bar is continuous to the top
+        // edge instead of sitting below a separate strip. Maximisable is
+        // deliberately absent — the window does not zoom.
+        ns.setStyleMask(
+            NSWindowStyleMask::Titled
+                | NSWindowStyleMask::Closable
+                | NSWindowStyleMask::Miniaturizable
+                | NSWindowStyleMask::Resizable
+                | NSWindowStyleMask::FullSizeContentView,
+        );
+        ns.setTitlebarAppearsTransparent(true);
+        ns.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+
+        // Paint the window itself the same charcoal as the title bar. With
+        // FullSizeContentView the window's own background is exposed along the
+        // top edge, and its default light `windowBackgroundColor` read as a
+        // white hairline above the dark bar. Matching `--bar` in styles.css
+        // (#2c2f36), which is fixed across both themes.
+        let bar =
+            NSColor::colorWithSRGBRed_green_blue_alpha(44.0 / 255.0, 47.0 / 255.0, 54.0 / 255.0, 1.0);
+        ns.setBackgroundColor(Some(&bar));
+
+        // A one-pixel hairline remains along the top edge in light mode. It is
+        // drawn by the window frame, not by us — the window's own background is
+        // the charcoal set above, and forcing it away needs a dark window
+        // appearance, which the web view inherits and which would pin the whole
+        // UI to the dark theme. Following the system light/dark setting, as the
+        // Windows build does, is worth more than the hairline costs.
+
+        // Zoom does nothing here (the window is not maximizable), so it is
+        // hidden rather than left as a dead green button.
+        if let Some(zoom) = ns.standardWindowButton(NSWindowButton::ZoomButton) {
+            zoom.setHidden(true);
+        }
+    });
+}
+
+/// Order the popup in without activating the app.
+///
+/// `orderFront:` is a request from an application that expects to be active,
+/// and ours never is — it runs as an `Accessory` with no Dock icon, so when the
+/// current Space belongs to someone else's full-screen window the request can
+/// simply be dropped. `orderFrontRegardless` is the documented way to say "show
+/// this even though I am not the active app", which is exactly this popup's
+/// situation every single time it appears.
+///
+/// This does not focus the window and does not activate the app, so it does not
+/// undo the non-activating behaviour the paste depends on.
+#[cfg(target_os = "macos")]
+pub(crate) fn order_popup_front(win: &tauri::WebviewWindow) {
+    use objc2_app_kit::NSWindow;
+
+    let Ok(ptr) = win.ns_window() else { return };
+    if ptr.is_null() {
+        return;
+    }
+    let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+    ns.orderFrontRegardless();
+}
+
 /// On Windows, strip the popup of activation so showing it never steals focus
 /// from the app the user is pasting into.
 #[cfg(windows)]
@@ -593,11 +740,14 @@ pub fn run() {
                 let _ = popup.hide();
                 #[cfg(windows)]
                 make_non_activating(&popup);
+                #[cfg(target_os = "macos")]
+                make_popup_float(&popup);
                 let _ = popup.set_ignore_cursor_events(true);
             }
 
             // Main window: closing hides it instead of quitting the app.
             if let Some(main) = app.get_webview_window("main") {
+
                 let w = main.clone();
                 main.on_window_event(move |ev| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
@@ -622,6 +772,9 @@ pub fn run() {
                     let _ = std::fs::write(&marker, b"1");
                 }
             }
+
+            #[cfg(target_os = "macos")]
+            make_native_titlebar(&handle);
 
             build_tray(&handle, app_state.clone())?;
             hook::start(handle.clone(), app_state.clone());
