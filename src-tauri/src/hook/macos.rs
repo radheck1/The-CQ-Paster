@@ -220,6 +220,12 @@ pub fn start(app: AppHandle, state: Arc<AppState>) {
 /// In a dev build this is granted to the **terminal or IDE that launched the
 /// binary**, not to CQ Paster — so a rebuild can appear to lose the permission,
 /// and the entry to tick in System Settings is the terminal's.
+/// Both grants the tap needs: Accessibility to create it, Input Monitoring to
+/// receive anything through it.
+fn permissions_ready() -> bool {
+    accessibility_trusted(false) && crate::permissions::input_monitoring_granted()
+}
+
 /// Show the system's Accessibility prompt and report whether we are trusted.
 pub fn request_accessibility() -> bool {
     accessibility_trusted(true)
@@ -249,21 +255,28 @@ fn accessibility_trusted(prompt: bool) -> bool {
 }
 
 fn run_tap(tx: Sender<Action>, injecting: Arc<AtomicBool>) {
-    // Wait quietly for the permission; `permissions.rs` owns all the prompting,
-    // so this never raises its own dialog — two flows asking for the same grant
-    // would stack a system prompt behind our alert. Polling means a permission
-    // granted minutes later starts working with no restart.
-    if !accessibility_trusted(false) {
+    // Wait for BOTH grants before creating the tap.
+    //
+    // Accessibility alone is not enough, and getting this wrong is silent:
+    // a tap created before Input Monitoring is granted is created
+    // *successfully*, reports no error, and then never delivers a single
+    // event — and granting the permission afterwards does not revive it. Since
+    // the two are granted seconds apart, waiting only on Accessibility means
+    // the tap is almost always built in that dead window.
+    //
+    // `permissions.rs` owns all prompting; this only ever waits and never
+    // raises its own dialog, or a system prompt would stack behind our alert.
+    if !permissions_ready() {
         eprintln!(
-            "[cq-paster] waiting for Accessibility permission (System Settings > \
-             Privacy & Security > Accessibility). Hotkeys are inactive until then. \
-             In a dev build, grant it to the terminal running this binary, not to \
-             CQ Paster."
+            "[cq-paster] waiting for Accessibility and Input Monitoring (System \
+             Settings > Privacy & Security). Hotkeys are inactive until both are \
+             on. In a dev build they are granted to the terminal running this \
+             binary, not to CQ Paster."
         );
-        while !accessibility_trusted(false) {
+        while !permissions_ready() {
             thread::sleep(PERMISSION_POLL);
         }
-        eprintln!("[cq-paster] Accessibility granted; installing event tap");
+        eprintln!("[cq-paster] permissions granted; installing event tap");
     }
 
     // The context outlives the tap for the life of the process.

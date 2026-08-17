@@ -24,6 +24,16 @@ pub fn start(app: tauri::AppHandle) {
     macos::start(app);
 }
 
+/// Whether the app may read key events yet.
+///
+/// The hook needs this as well as Accessibility: a tap created before Input
+/// Monitoring is granted is built successfully and then never delivers an
+/// event, and granting the permission afterwards does not revive it.
+#[cfg(target_os = "macos")]
+pub fn input_monitoring_granted() -> bool {
+    macos::input_monitoring_granted()
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn start(_app: tauri::AppHandle) {
     // Windows and Linux need no equivalent: the keyboard hook there requires no
@@ -204,7 +214,7 @@ mod macos {
     /// Whether the app may read key events. Distinct from Accessibility: the tap
     /// is created with one and delivers keystrokes with the other, so missing
     /// this looks exactly like a hook that installed fine and then went silent.
-    fn input_monitoring_granted() -> bool {
+    pub fn input_monitoring_granted() -> bool {
         unsafe { IOHIDCheckAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) == K_IOHID_ACCESS_TYPE_GRANTED }
     }
 
