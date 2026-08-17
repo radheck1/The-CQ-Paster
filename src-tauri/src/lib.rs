@@ -6,6 +6,7 @@
 
 mod clipboard;
 mod hook;
+mod permissions;
 mod slots;
 
 use std::path::PathBuf;
@@ -778,6 +779,10 @@ pub fn run() {
 
             build_tray(&handle, app_state.clone())?;
             hook::start(handle.clone(), app_state.clone());
+            // Walks the user through Accessibility and Input Monitoring. Both
+            // are needed for the hotkeys, and only the first has a system
+            // prompt — without this the app is simply inert and silent.
+            permissions::start(handle.clone());
 
             Ok(())
         })

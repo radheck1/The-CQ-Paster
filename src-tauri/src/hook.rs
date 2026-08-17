@@ -22,6 +22,13 @@ pub fn start(app: tauri::AppHandle, state: std::sync::Arc<crate::AppState>) {
     macos::start(app, state);
 }
 
+/// Trigger the system's Accessibility prompt. Exposed so the permissions flow
+/// owns all user-facing prompting in one place.
+#[cfg(target_os = "macos")]
+pub fn request_accessibility() -> bool {
+    macos::request_accessibility()
+}
+
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn start(_app: tauri::AppHandle, _state: std::sync::Arc<crate::AppState>) {
     // Hook backend for other platforms is not implemented.

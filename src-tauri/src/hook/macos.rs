@@ -220,6 +220,11 @@ pub fn start(app: AppHandle, state: Arc<AppState>) {
 /// In a dev build this is granted to the **terminal or IDE that launched the
 /// binary**, not to CQ Paster — so a rebuild can appear to lose the permission,
 /// and the entry to tick in System Settings is the terminal's.
+/// Show the system's Accessibility prompt and report whether we are trusted.
+pub fn request_accessibility() -> bool {
+    accessibility_trusted(true)
+}
+
 fn accessibility_trusted(prompt: bool) -> bool {
     unsafe {
         if !prompt {
@@ -244,9 +249,11 @@ fn accessibility_trusted(prompt: bool) -> bool {
 }
 
 fn run_tap(tx: Sender<Action>, injecting: Arc<AtomicBool>) {
-    // Ask once, with the system prompt, then wait quietly. Polling means a
-    // permission granted minutes later starts working without a restart.
-    if !accessibility_trusted(true) {
+    // Wait quietly for the permission; `permissions.rs` owns all the prompting,
+    // so this never raises its own dialog — two flows asking for the same grant
+    // would stack a system prompt behind our alert. Polling means a permission
+    // granted minutes later starts working with no restart.
+    if !accessibility_trusted(false) {
         eprintln!(
             "[cq-paster] waiting for Accessibility permission (System Settings > \
              Privacy & Security > Accessibility). Hotkeys are inactive until then. \
