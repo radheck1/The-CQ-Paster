@@ -166,6 +166,10 @@ static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 /// by the worker under CQ_DEBUG.
 static CHORD_RESETS: AtomicUsize = AtomicUsize::new(0);
 
+/// Every event the tap has delivered. One relaxed increment in the callback,
+/// which is cheap enough to be safe there; the watchdog reads it.
+static EVENTS_SEEN: AtomicUsize = AtomicUsize::new(0);
+
 /// Trace chord activity to stderr. Off unless `CQ_DEBUG=1`, and only ever
 /// called from the worker thread.
 fn debug_on() -> bool {
@@ -267,16 +271,14 @@ fn run_tap(tx: Sender<Action>, injecting: Arc<AtomicBool>) {
     // `permissions.rs` owns all prompting; this only ever waits and never
     // raises its own dialog, or a system prompt would stack behind our alert.
     if !permissions_ready() {
-        eprintln!(
-            "[cq-paster] waiting for Accessibility and Input Monitoring (System \
-             Settings > Privacy & Security). Hotkeys are inactive until both are \
-             on. In a dev build they are granted to the terminal running this \
-             binary, not to CQ Paster."
-        );
+        crate::diag(&format!(
+            "hook waiting for permissions: {}",
+            crate::permissions::report()
+        ));
         while !permissions_ready() {
             thread::sleep(PERMISSION_POLL);
         }
-        eprintln!("[cq-paster] permissions granted; installing event tap");
+        crate::diag("hook: both permissions granted, installing event tap");
     }
 
     // The context outlives the tap for the life of the process.
@@ -285,6 +287,20 @@ fn run_tap(tx: Sender<Action>, injecting: Arc<AtomicBool>) {
         injecting,
         pending_slot: AtomicUsize::new(0),
     }));
+
+    // Watchdog. Reports whether the tap is actually seeing keystrokes, which is
+    // the one thing behaviour alone cannot distinguish: a tap that was never
+    // created, one created but starved of events, and a chord machine that is
+    // misreading them all look identical from outside.
+    thread::spawn(|| loop {
+        thread::sleep(Duration::from_secs(10));
+        crate::diag(&format!(
+            "tap watchdog: events_seen={} tap_installed={} {}",
+            EVENTS_SEEN.load(Ordering::Relaxed),
+            !TAP_PORT.load(Ordering::SeqCst).is_null(),
+            crate::permissions::report()
+        ));
+    });
 
     loop {
         install_tap(ctx);
@@ -311,9 +327,16 @@ fn install_tap(ctx: *mut Ctx) {
         )
     };
     if port.is_null() {
-        eprintln!("[cq-paster] could not create event tap (Accessibility revoked?)");
+        crate::diag(&format!(
+            "CGEventTapCreate returned NULL — tap not created. {}",
+            crate::permissions::report()
+        ));
         return;
     }
+    crate::diag(&format!(
+        "CGEventTapCreate succeeded. {}",
+        crate::permissions::report()
+    ));
 
     let source = unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), port, 0) };
     if source.is_null() {
@@ -347,6 +370,10 @@ extern "C" fn tap_callback(
     event: CGEventRef,
     user_info: *mut c_void,
 ) -> CGEventRef {
+    // One relaxed increment, read by the watchdog. Cheap enough for the
+    // callback, and it is the only way to tell a starved tap from a working one.
+    EVENTS_SEEN.fetch_add(1, Ordering::Relaxed);
+
     // The system disabled us — re-arm. This is the analogue of the Windows
     // LowLevelHooksTimeout bypass, except macOS does not recover on its own.
     if event_type == KCG_EVENT_TAP_DISABLED_BY_TIMEOUT

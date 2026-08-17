@@ -68,6 +68,30 @@ fn ensure_data_dir() {
     }
 }
 
+/// Append a line to the diagnostics log beside the persisted state.
+///
+/// A bundled `.app` has nowhere for `eprintln!` to go — GUI stderr is not
+/// captured by the unified log — so without this the app cannot report anything
+/// about itself once installed, which is exactly when the permission problems
+/// happen. Kept deliberately dumb: no dependencies, no buffering, safe to call
+/// from any thread. Never call it from the tap callback (6.1).
+pub fn diag(msg: &str) {
+    use std::io::Write;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!("[{secs}] {msg}");
+    eprintln!("[cq-paster] {line}");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data_dir().join("diagnostics.log"))
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 /// Where folders (and their slots) are persisted, so they survive restarts.
 fn folders_file() -> PathBuf {
     data_dir().join("folders.bin")
@@ -701,6 +725,11 @@ fn make_non_activating(win: &tauri::WebviewWindow) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     ensure_data_dir();
+    diag(&format!(
+        "--- launch: exe={:?} debug_build={}",
+        std::env::current_exe(),
+        cfg!(debug_assertions)
+    ));
     let app_state = Arc::new(AppState::new());
 
     tauri::Builder::default()

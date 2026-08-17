@@ -34,6 +34,12 @@ pub fn input_monitoring_granted() -> bool {
     macos::input_monitoring_granted()
 }
 
+/// The app's own view of both permissions, for the diagnostics log.
+#[cfg(target_os = "macos")]
+pub fn report() -> String {
+    macos::report()
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn start(_app: tauri::AppHandle) {
     // Windows and Linux need no equivalent: the keyboard hook there requires no
@@ -52,11 +58,6 @@ mod macos {
 
     /// How often to re-check whether the user has granted something yet.
     const CHECK_EVERY: Duration = Duration::from_secs(2);
-    /// How long to leave the user alone after they dismiss an alert. They chose
-    /// "Re-show until granted", but re-appearing instantly would make System
-    /// Settings unusable — this is long enough to actually go and do it.
-    const REPROMPT_AFTER: Duration = Duration::from_secs(30);
-
     /// Only ever one alert on screen. `runModal` blocks the main thread, so
     /// without this the polling loop would queue a second alert behind the first.
     static ALERT_OPEN: AtomicBool = AtomicBool::new(false);
@@ -72,6 +73,13 @@ mod macos {
             match self {
                 Permission::Accessibility => accessibility_trusted(),
                 Permission::InputMonitoring => input_monitoring_granted(),
+            }
+        }
+
+        fn label(self) -> &'static str {
+            match self {
+                Permission::Accessibility => "Accessibility",
+                Permission::InputMonitoring => "Input Monitoring",
             }
         }
 
@@ -124,6 +132,7 @@ mod macos {
 
     pub fn start(app: AppHandle) {
         thread::spawn(move || {
+            crate::diag(&format!("permissions at startup: {}", report()));
             // Strictly in order: Input Monitoring is pointless to ask for while
             // the tap cannot be created at all, and two alerts at once is the
             // fastest way to get both ignored.
@@ -143,18 +152,15 @@ mod macos {
         // the alert that follows either way.
         request_from_system(which);
 
-        let mut waited = REPROMPT_AFTER; // prompt straight away the first time
-        loop {
-            if which.granted() {
-                return;
-            }
-            if waited >= REPROMPT_AFTER && !ALERT_OPEN.load(Ordering::SeqCst) {
-                show_alert(app, which);
-                waited = Duration::ZERO;
-            }
+        // Ask once, then wait quietly. Re-prompting on a timer turned out to be
+        // unusable: while a permission reads as ungranted for any reason the
+        // alert keeps interrupting, including while the user is in System
+        // Settings trying to grant it.
+        show_alert(app, which);
+        while !which.granted() {
             thread::sleep(CHECK_EVERY);
-            waited += CHECK_EVERY;
         }
+        crate::diag(&format!("permission granted: {}", which.label()));
     }
 
     /// Put the alert up on the main thread and act on the button.
@@ -209,6 +215,26 @@ mod macos {
 
     fn accessibility_trusted() -> bool {
         unsafe { AXIsProcessTrusted() }
+    }
+
+    /// Everything the app knows about its own permissions, for the log.
+    ///
+    /// The raw IOKit value matters: 0 granted, 1 denied, 2 unknown. Treating
+    /// anything but 0 as "not granted" is a guess until we have seen the real
+    /// number from an installed build.
+    pub fn report() -> String {
+        let hid = unsafe { IOHIDCheckAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) };
+        format!(
+            "accessibility={} input_monitoring_raw={} ({})",
+            accessibility_trusted(),
+            hid,
+            match hid {
+                0 => "granted",
+                1 => "denied",
+                2 => "unknown",
+                _ => "unexpected",
+            }
+        )
     }
 
     /// Whether the app may read key events. Distinct from Accessibility: the tap
