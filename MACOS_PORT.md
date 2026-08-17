@@ -1,7 +1,13 @@
-# CQ Paster — macOS port brief
+# CQ Paster — macOS port
 
-Handoff document for building the macOS version. Written from the Windows side,
-where v0.5.0 is complete and shipping.
+Originally a handoff brief written from the Windows side, before any macOS work
+existed. **The port is now built and working**, so this has been revised into a
+record of how macOS actually behaves — including the places the original
+predictions were wrong, which are flagged as they come up. Those corrections are
+the most useful part of this document.
+
+Status: macOS works end to end on a signed, installed build. Windows v0.5.0 is
+unchanged and still shipping.
 
 ---
 
@@ -10,16 +16,14 @@ where v0.5.0 is complete and shipping.
 **CQ Paster** is an ultra-minimal, hotkey-driven multi-slot clipboard manager.
 It lives in the tray/menu bar with almost no UI.
 
-**Core interaction (Windows, shipping today):**
+| Chord | Windows | macOS |
+| --- | --- | --- |
+| Copy selection into slot N | `Ctrl + <N> + C` | `Cmd + <N> + C` |
+| Paste slot N | `Ctrl + <N> + V` | `Cmd + <N> + V` |
+| Paste slot N as plain text | `Ctrl + Shift + <N> + V` | `Cmd + Shift + <N> + V` |
 
-| Chord | Action |
-| --- | --- |
-| `Ctrl + <N> + C` | Copy the current selection into slot N (1–9) |
-| `Ctrl + <N> + V` | Paste slot N |
-| `Ctrl + Shift + <N> + V` | Paste slot N as plain text |
-
-Plain `Ctrl+C` / `Ctrl+V` must remain **completely unaffected**. That is a hard
-requirement, not a nice-to-have.
+Plain `Ctrl+C`/`Cmd+C` and `Ctrl+V`/`Cmd+V` must remain **completely
+unaffected**. That is a hard requirement, not a nice-to-have.
 
 The digit is pressed **before** the letter deliberately: the app needs to know
 which slot is targeted before the action fires.
@@ -30,316 +34,461 @@ The folder named **Main** is permanent and cannot be renamed or deleted.
 
 **Two modes:** *Master* (zero UI) and *Noob* (a reference popup near the cursor).
 
-**Accepted tradeoff:** the app claims `Ctrl+1`–`Ctrl+9` as its trigger prefix, so
-browser tab-switching shortcuts stop working while it runs. The user has
-explicitly accepted this. The same applies to `Cmd+1`–`Cmd+9` on macOS.
+**Accepted tradeoff:** the app claims `Ctrl+1`–`Ctrl+9` / `Cmd+1`–`Cmd+9` as its
+trigger prefix, so browser tab-switching shortcuts stop working while it runs.
 
 ---
 
-## 2. The macOS hotkey decision (already made — do not relitigate)
+## 2. Repo layout
 
-Use **Cmd (⌘) as the trigger key**, mirroring Ctrl on Windows:
+Two platforms, deliberately **not** factored into shared code. Windows is
+shipping and cannot be re-verified from a macOS machine, so the duplication buys
+the guarantee that macOS work cannot affect it.
 
-- `Cmd + <N> + C` — copy into slot N
-- `Cmd + <N> + V` — paste slot N
-- `Cmd + Shift + <N> + V` — paste slot N as plain text
-
-Plain `Cmd+C` / `Cmd+V` must pass through untouched.
-
----
-
-## 3. Repo and current state
-
-```
-git clone https://github.com/radheck1/The-CQ-Paster.git
-```
-
-Current version: **v0.5.0**, tagged and released. Windows is feature-complete.
-**No macOS work has been started.**
-
-### Stack
-
-- **Tauri v2** (Rust backend + webview frontend)
-- Frontend is **vanilla TypeScript + Vite** — no framework, no UI library
-- `bincode` for state persistence
-- Windows-only crates (`rdev`, `clipboard-win`, `windows-sys`) are already
-  isolated under `[target.'cfg(windows)'.dependencies]` in `Cargo.toml`
-
-### File map
-
-| File | Role | Portability |
-| --- | --- | --- |
-| `src-tauri/src/slots.rs` | `SlotStore` (9 slots), `FolderStore` (folders + active pointer), persistence, 11 unit tests | **Fully portable — do not change** |
-| `src-tauri/src/lib.rs` | Tauri wiring, tray, commands, `AppState` | Mostly portable; several `#[cfg(windows)]` blocks |
-| `src-tauri/src/hook.rs` | Global keyboard hook + chord state machine | **Windows-only. Needs a macOS sibling.** |
-| `src-tauri/src/clipboard.rs` | Raw clipboard snapshot/restore | **Windows-only impls. Needs a macOS sibling.** Preview/parsing helpers are shared and portable. |
-| `src/main.ts` | Frontend for both windows (branches on window label) | **Fully portable** |
-| `src/styles.css` | Theme tokens, all UI styling | **Fully portable** |
-
----
-
-## 4. Start here: confirm it already builds
-
-The crate *should* already compile and run on macOS, giving you the full UI,
-tray, folders and persistence — with **no hotkeys and no clipboard capture**.
-That is your baseline. I could not verify this from Windows (no cross-compile),
-so **confirm it first before writing any new code**:
-
-```bash
-npm install
-npm run tauri dev
-```
-
-Why it should work: `hook.rs` has a `#[cfg(not(windows))]` no-op `start()`,
-`clipboard.rs` has `#[cfg(not(windows))]` stubs for `snapshot()`/`restore()`
-that return `Err`, and `lib.rs` has a `#[cfg(not(windows))]` fallback for the
-tray icon. The pure byte-parsing helpers (`preview`, `text_only`, `parse_hdrop`,
-`dib_dimensions`, `trim_preview`, `utf16_to_string`) are **not** gated and
-compile everywhere.
-
-If it doesn't build, fix the `cfg` gates first and commit that separately.
-
-**Rule for the whole port: never break the Windows build.** Everything
-macOS-specific goes behind `#[cfg(target_os = "macos")]`. Windows is shipping
-to a real user.
-
----
-
-## 5. What must be built
-
-### 5.1 Clipboard layer (`NSPasteboard`)
-
-Implement macOS versions of the functions `hook.rs` calls:
-
-```rust
-pub fn snapshot() -> Result<ClipSnapshot, String>
-pub fn restore(snap: &ClipSnapshot) -> Result<(), String>
-pub fn is_sensitive() -> bool
-pub fn init_thread()          // may be a no-op on macOS
-pub fn text_only(snap) -> Option<ClipSnapshot>   // already shared; may need mac UTI awareness
-```
-
-`ClipSnapshot` is `Vec<ClipFormat { id: u32, data: Vec<u8> }>`. On Windows `id`
-is a numeric clipboard format id. **macOS uses string UTIs, not integers**, so
-you need a mapping strategy. Two options:
-
-- **Preferred:** add a `#[cfg(target_os = "macos")]` variant that stores the UTI
-  string alongside the bytes. Since `ClipFormat` is serialized with `bincode`
-  into the persisted store, changing its shape is a **breaking change to the
-  on-disk format** — but macOS has no existing users, so on macOS you are free.
-  Just don't change the Windows representation.
-- Alternative: intern UTI strings to synthetic u32 ids in a side table. Simpler
-  to type, worse to debug, and the ids won't survive a restart. Not recommended.
-
-**Types worth capturing** (roughly the macOS analogue of what Windows captures):
-
-| UTI | Meaning |
+| File | Role |
 | --- | --- |
-| `public.utf8-plain-text` | plain text |
-| `public.html` | HTML |
-| `public.rtf` | rich text |
-| `public.png`, `public.tiff` | images |
-| `public.file-url` / `NSFilenamesPboardType` | file lists |
-| app-specific types | capture verbatim, don't interpret |
+| `src-tauri/src/slots.rs` | `SlotStore`, `FolderStore`, persistence. Portable; only its test helpers are platform-specific. |
+| `src-tauri/src/lib.rs` | Tauri wiring, tray, commands, window chrome, `AppState` |
+| `src-tauri/src/hook.rs` | Dispatch + the Windows hook (`windows_impl`) |
+| `src-tauri/src/hook/macos.rs` | `CGEventTap` + the macOS chord machine |
+| `src-tauri/src/clipboard.rs` | Dispatch + the Windows clipboard layer |
+| `src-tauri/src/clipboard/macos.rs` | `NSPasteboard` layer |
+| `src-tauri/src/permissions.rs` | macOS permission flow (Accessibility, Input Monitoring) |
+| `src/main.ts` | Frontend for both windows; `MOD` renders `Ctrl` or `⌘` |
+| `src/styles.css` | Theme tokens; macOS-specific rules scoped to `[data-platform="macos"]` |
 
-Capture **every** type the source app published, and write those exact bytes
-back on restore. Do not try to interpret payloads for storage — only for the
-small human-readable preview.
+**Gating rule:** everything macOS-specific is behind `#[cfg(target_os = "macos")]`
+or `[data-platform="macos"]`. Items that used to be shared and are now
+Windows-shaped use `#[cfg(not(target_os = "macos"))]`, **not** `#[cfg(windows)]`,
+so the Linux build keeps compiling as it did before.
 
-**Privacy — this matters.** Windows honours
-`ExcludeClipboardContentFromMonitorProcessing` / `CanIncludeInClipboardHistory`
-so password managers aren't captured. The macOS convention is the pasteboard
-type **`org.nspasteboard.ConcealedType`**. Check for it in `is_sensitive()` and
-skip the copy entirely when present. 1Password and similar set it.
-
-### 5.2 Global hook (`CGEventTap`)
-
-Replace the `rdev`-based Windows hook. `rdev` does have macOS support, but its
-suppression story is weaker — evaluate a direct `CGEventTap` via the
-`core-graphics` crate, which is what you want for reliable suppression.
-
-You need to:
-- Install a tap at `kCGHIDEventTap` / `kCGSessionEventTap` for
-  `kCGEventKeyDown` (+ `kCGEventFlagsChanged` if you track modifiers via events)
-- Return `None` from the callback to **swallow** an event (the digit, and the V
-  in a paste chord)
-- Post a synthetic `Cmd+V` with `CGEvent` to perform the actual paste
-
-**Permissions — the biggest macOS-specific hurdle:**
-
-- A `CGEventTap` requires **Accessibility** permission
-  (System Settings → Privacy & Security → Accessibility).
-- Recent macOS also gates key capture behind **Input Monitoring**.
-- Prompt with `AXIsProcessTrustedWithOptions` and
-  `kAXTrustedCheckOptionPrompt: true`.
-- **In dev, the permission is granted to the *terminal/IDE* running the binary,
-  not to the app.** This causes enormous confusion — a rebuild can silently lose
-  the tap. Budget time for this and tell the user plainly when a permission
-  re-grant is needed.
-- The app must handle the permission being absent at launch without crashing,
-  and ideally re-check when it's granted.
-
-**`kCGEventTapDisabledByTimeout` — read this twice.** This is the direct
-analogue of the Windows bug that cost us the most time. If your tap callback
-takes too long, **macOS silently disables the tap** and every hotkey stops
-working. You must listen for `kCGEventTapDisabledByTimeout` (and
-`...ByUserInput`) and call `CGEventTapEnable` to re-arm it. See §6.1 — the
-callback must stay minimal regardless.
-
-### 5.3 Non-activating popup panel
-
-`lib.rs` has `make_non_activating()` (`#[cfg(windows)]`, uses
-`WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`) so the Noob-mode popup never steals focus
-from the app being pasted into. The macOS equivalent:
-
-- Make the popup window an `NSPanel` with `.nonactivatingPanel` style
-- `collectionBehavior`: `.canJoinAllSpaces` + `.fullScreenAuxiliary`
-- Set `level` above normal windows
-- Ensure it never becomes key/main
-
-Getting this wrong means the popup steals focus and the paste lands in the
-wrong app — an obvious, immediate bug.
-
-### 5.4 Paths
-
-`lib.rs` has:
-
-```rust
-fn data_dir() -> PathBuf {
-    let base = std::env::var_os("APPDATA") ...;
-    base.join("com.cqpaster.app")
-}
-```
-
-Add a `#[cfg(target_os = "macos")]` arm using
-`~/Library/Application Support/com.cqpaster.app`. Everything downstream
-(`folders.bin`, `slots.bin`, `autostart.init`) then works unchanged.
-
-Note the Windows migration path reads a legacy `slots.bin`; on macOS there is
-nothing to migrate, and `FolderStore::load` already handles a missing file by
-returning a default store with a single **Main** folder.
-
-### 5.5 Menu bar icon + theme
-
-`lib.rs` reads the Windows registry to detect light/dark and swaps the tray icon
-(`system_uses_light_theme`, `tray_icon_image`, `spawn_theme_watcher`, all
-`#[cfg(windows)]`). On macOS, use a **template image** (`setTemplate: true`) and
-the system tints it automatically for light/dark — no polling watcher needed.
-Icons live in `src-tauri/icons/` (`tray-white.png`, `tray-black.png`).
-
-### 5.6 Autostart
-
-`tauri-plugin-autostart` is already configured with
-`MacosLauncher::LaunchAgent`, so this should work with no changes. Verify it.
+macOS deps (`objc2`, `objc2-app-kit`, `objc2-foundation`) live in a
+`[target.'cfg(target_os = "macos")'.dependencies]` block. Windows crates
+(`rdev`, `clipboard-win`, `windows-sys`) stay in theirs.
 
 ---
 
-## 6. Hard-won lessons — carry these over
+## 3. The clipboard layer
 
-These were paid for with long debugging sessions on Windows. Read before coding.
+### 3.1 The shape is different, and it matters
 
-### 6.1 Never put slow work in the hook callback
+> **Original prediction:** store the UTI string alongside the bytes, keeping
+> `ClipSnapshot` a flat list of formats.
+>
+> **Reality:** that is not enough. A macOS pasteboard is a **list of items**,
+> each with its own set of UTIs. Finder represents a three-file copy as **three
+> items** carrying `public.file-url`, and publishes no `NSFilenamesPboardType`
+> alongside it — there is no single-blob equivalent of `CF_HDROP` to fall back
+> on.
 
-`hook.rs` carries this comment, and it is the single most important constraint
-in the codebase:
+Flattening items into one list is not a lossless simplification: setting the
+same UTI twice on one pasteboard keeps only the first value **and still reports
+success**, so a three-file copy silently pastes as one file. Same class of
+failure as the Windows `raw::set` bug in §5.4.
 
-> **IMPORTANT: keep this callback minimal and non-blocking.** A low-level
-> keyboard hook that takes too long (~300ms, `LowLevelHooksTimeout`) is silently
-> bypassed by Windows, which lets suppressed keys leak through.
-> **Do NOT add logging or slow work here.**
+So macOS keeps items as the outer dimension:
 
-A single `eprintln!` in that callback made `Ctrl+2` start switching browser tabs
-again — the suppression silently stopped working. **macOS has the same failure
-mode** via `kCGEventTapDisabledByTimeout`, except it disables the tap entirely
-rather than degrading.
+```rust
+ClipSnapshot { items: Vec<ClipItem> }
+ClipItem     { types: Vec<ClipType> }
+ClipType     { uti: String, data: Vec<u8> }
+```
 
-**Architecture to preserve:** the callback does nothing but classify the
-keystroke and `send()` an enum down an `mpsc::channel`. A **separate worker
-thread** does all clipboard work. Keep this split exactly as-is.
+This changes the persisted `bincode` layout on macOS only, which is safe because
+macOS had no existing users. The Windows representation is untouched.
 
-### 6.2 Query the modifier live, never cache it
+### 3.2 Promised data — the single biggest gotcha
 
-The Windows hook calls `ctrl_physically_down()` (`GetAsyncKeyState`) on every
-keypress rather than tracking Ctrl via a cached flag. Reason: a modifier release
-can be **missed while injecting a synthetic paste**, and a stale cached flag then
-misreads a later plain `Ctrl+C` as a slot store — **silently clobbering a saved
-slot**. Use the macOS equivalent (`CGEventSourceKeyState` or the event's own
-`flags`) and query it live.
+`NSPasteboardItem.dataForType:` returns an **empty `NSData`** for lazily-provided
+types. `NSPasteboard.dataForType:` — the pasteboard-level call — makes the owning
+app actually produce the bytes.
 
-### 6.3 Only cache the pending digit, and reset it on modifier press
+WebKit apps (Safari, anything Electron-adjacent using WKWebView) publish their
+text and HTML this way. Read them per-item and you capture only
+`com.apple.webarchive`, so the slot previews blank and pastes nothing. This cost
+several debugging rounds because every symptom pointed at timing instead.
 
-The only cached chord state is an `AtomicUsize` holding the pending slot (0 =
-none), cleared on every fresh Ctrl press so a plain `Ctrl+C` can never reuse a
-stale slot. The callback must be `Fn`, not `FnMut` — hence atomics.
+The fallback is restricted to the **first item declaring a given UTI**: the
+pasteboard-level call always answers from that item, so applying it blindly
+copies item 0's payload across every item and turns a three-file Finder copy
+into the same file three times.
 
-### 6.4 Restore must write all formats without clearing between them
+### 3.3 A capture is not finished when the counter moves
 
-On Windows, `clipboard_win::raw::set` **empties the clipboard on every call**, so
-setting N formats left only the last one. Fix was to empty once, then use
-`set_without_clear` per format. **The macOS analogue:** `NSPasteboard`
-`clearContents()` must be called **exactly once**, then `setData:forType:` for
-each type. Calling `declareTypes:` repeatedly will wipe earlier types.
+`NSPasteboard.changeCount` increments when the source app calls
+`clearContents`/`declareTypes` — *before* it writes any payloads. Capturing on
+the bump alone finds the types declared and empty.
 
-### 6.5 Don't snapshot the live clipboard right before pasting
+So the copy path waits on the **outcome**, not a duration: poll until a snapshot
+has no declared-but-empty types (`is_complete()`). "Some type has bytes" is too
+weak a test — WebKit lands its own types first and leaves `public.html` and
+`public.utf8-plain-text` at 0 bytes for a moment.
 
-An earlier version snapshotted the current clipboard before loading a slot, to
-restore it afterwards. This **woke the source app's asynchronous/lazy pasteboard
-provider**, which then re-asserted the clipboard and clobbered what we set.
-The feature was removed. macOS has lazy pasteboard providers too
-(`NSPasteboardItemDataProvider`) — expect the same class of bug.
+There is **no fixed delay in the copy path**, unlike the Windows 120 ms sleep.
+The 500 ms is only a give-up point.
 
-### 6.6 File pastes must be a copy, not a move
+If a publisher never fills a type it declared, keep what did arrive minus the
+empty types. Never store empty payloads: they make previews blank, make
+`text_only` produce a text type with no text, and paste nothing.
 
-Windows needed `Preferred DropEffect = DROPEFFECT_COPY` or Finder-equivalent
-treated the paste as a move ("source and destination are the same" dialogs).
-Check the macOS behaviour for `public.file-url` pastes into Finder.
+### 3.4 Finder publishes references, not paths
 
-### 6.7 Build a standalone diagnostic binary for clipboard debugging
+```
+file:///.file/id=6571367.46089685
+  -> /Users/…/Desktop/Screenshot 2026-08-13 at 9.53.16 AM.png
+```
 
-The file-paste bug was only cracked by writing a tiny standalone Rust binary
-that dumped the pasteboard and tried restores, iterating in seconds instead of
-rebuilding all of Tauri. **Do this immediately** when clipboard behaviour gets
-confusing. On Windows it lived outside the repo in a scratch dir.
+Those are volume-id references, only meaningful while the file stays put — and
+slots persist across restarts. They are resolved to concrete paths at capture
+time with `NSURL.filePathURL`, which is the direct analogue of the Windows
+PIDL→path conversion in `augment_files`.
 
-### 6.8 Release Shift before injecting the paste
+### 3.5 Types worth knowing
 
-For plain-text paste the user is physically holding Shift. The Windows code
-releases Shift before injecting so the target receives a clean `Cmd/Ctrl+V`, not
-`Ctrl+Shift+V` (which opens paste-special dialogs in some apps). Do the same.
+| UTI | Notes |
+| --- | --- |
+| `public.utf8-plain-text` | the main text type |
+| `public.utf16-external-plain-text` | Finder attaches this; has a BOM, either endianness |
+| `public.html` | what Chrome publishes; **no `public.rtf`** |
+| `public.png` | screenshots arrive as a single PNG item; dimensions from the IHDR chunk |
+| `public.file-url` | one per item, see §3.4 |
+| `com.apple.webarchive` | WebKit lands this first, see §3.2 |
+| `org.chromium.web-custom-data` | ~15 KB per copy, even for a few characters |
+| `org.chromium.internal.source-rfh-token` | **skip on restore** — see below |
 
-### 6.9 Not every "bug" is a bug
+`org.chromium.internal.source-rfh-token` is the macOS `is_ole_cookie`: a
+process-scoped handle identifying a render frame that is long gone by the time a
+slot is pasted. Its sibling `org.chromium.source-url` records the **source page
+URL** into every persisted slot, which Windows slots do not do — a privacy
+wrinkle worth a deliberate decision.
+
+### 3.6 Privacy — weaker than Windows, unavoidably
+
+`org.nspasteboard.ConcealedType` is the only convention macOS offers, and it is
+advisory. Diagnostics during the port confirmed a real password copied through
+1Password's **web** interface arrives with no marker at all — just
+`public.utf8-plain-text` and Chromium's source types — and **will** be captured
+into a slot.
+
+Windows has firmer ground (`ExcludeClipboardContentFromMonitorProcessing` and
+friends). This is genuinely weaker on macOS, not an oversight. The test-matrix
+line "password manager content is skipped" is **not fully deliverable**.
+Anything stronger — a source-application denylist, say — is a product decision.
+
+---
+
+## 4. The hook
+
+### 4.1 Two permissions, not one
+
+> **Original prediction:** mentioned Input Monitoring in passing.
+>
+> **Reality:** it is a hard requirement and the failure is silent.
+
+- **Accessibility** — needed to *create* the `CGEventTap`
+- **Input Monitoring** — needed to *receive* events through it
+
+A tap created before Input Monitoring is granted is created **successfully**,
+returns no error, and then never delivers a single event. Granting the
+permission afterwards does not revive it. Since the two are granted seconds
+apart, waiting only on Accessibility means the tap is almost always built in
+that dead window.
+
+**Wait for both before creating the tap.** Check Accessibility with
+`AXIsProcessTrusted`, Input Monitoring with `IOHIDCheckAccess` (`0` granted,
+`1` denied, `2` unknown — no record).
+
+Only Accessibility has a system prompt that reliably surfaces from a background
+app, so `permissions.rs` shows a native alert per permission, in order, each
+deep-linking to its pane:
+
+```
+x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility
+x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent
+```
+
+Ask **once per launch**. An earlier version re-prompted every 30s and was
+unusable — it interrupted the user while they were in System Settings granting
+the very thing it was asking for.
+
+### 4.2 Raw FFI, not the `core-graphics` wrapper
+
+Suppressing a key requires the callback to return `NULL`. The safe `CGEventTap`
+wrapper returns the *original* event when its closure yields `None`, so it can
+rewrite events but can never swallow one — precisely what `Cmd+<N>` needs.
+
+Tap at `kCGSessionEventTap` with `kCGEventTapOptionDefault`. Listen for
+`kCGEventKeyDown` and `kCGEventFlagsChanged`. Post the synthetic paste with
+`CGEventPost(kCGHIDEventTap, …)`.
+
+### 4.3 Re-arm the tap
+
+`kCGEventTapDisabledByTimeout` and `…ByUserInput` must be caught in the callback
+and answered with `CGEventTapEnable`. This is the analogue of the Windows
+`LowLevelHooksTimeout` bypass, except macOS disables the tap **entirely** rather
+than degrading.
+
+### 4.4 Consume the chord digit, don't clear it on release
+
+The Windows hook clears the pending digit on a fresh Ctrl press. macOS does the
+same on a fresh Cmd press, **but that is only a second line of defence**: the
+digit is consumed with `swap(0)` the moment C or V uses it.
+
+This is stronger than the Windows approach. Correctness no longer depends on
+observing a modifier event at all — which is exactly the state that goes missing
+while a synthetic paste is in flight (§5.2).
+
+### 4.5 Auto-repeat re-arms a consumed chord
+
+Holding `Cmd+<N>` repeats the digit at the OS repeat rate. A repeat arriving
+*after* C or V consumed the slot silently re-arms it, turning the user's next
+plain `Cmd+V` into another chord paste — invisible except in a trace.
+
+Arm on the initial press only: check `kCGKeyboardEventAutorepeat`. Repeats are
+still swallowed, so the app keeps owning `Cmd+1`–`Cmd+9`.
+
+### 4.6 Give the clipboard back
+
+Pasting a slot works by writing it to the system pasteboard and injecting
+`Cmd+V`. Nothing restores what was there before unless you do it, so slot N
+stays on the clipboard and the user's next plain `Cmd+V` re-pastes it. The two
+pairs must stay independent.
+
+The pasteboard is snapshotted before being borrowed and handed back after.
+
+**This reintroduces what §5.5 records as removed on Windows** — reading a lazy
+provider can make the source app re-assert and clobber. macOS has the same
+mechanism, and §3.2 proves those providers are real and load-bearing here. Treat
+intermittent wrong-content pastes as this until proven otherwise.
+
+The handback is the **one remaining real delay** (180 ms): macOS offers no
+"paste completed" signal. Too short and the target pastes the handed-back
+content; too long and a fast plain `Cmd+V` beats it.
+
+---
+
+## 5. Hard-won lessons
+
+Carried from Windows, plus what macOS added.
+
+### 5.1 Never put slow work in the hook callback
+
+> **IMPORTANT: keep this callback minimal and non-blocking.**
+
+A single `eprintln!` in the Windows callback made `Ctrl+2` start switching
+browser tabs again. **macOS has the same failure mode** via
+`kCGEventTapDisabledByTimeout`, except it disables the tap entirely.
+
+Architecture: the callback classifies the keystroke and `send()`s an enum down an
+`mpsc::channel`. A **separate worker thread** does all clipboard work. The only
+things added to the macOS callback are two atomic increments (a chord-reset
+counter and an event counter). Nothing else.
+
+### 5.2 Query the modifier live, never cache it
+
+A modifier release can be **missed while injecting a synthetic paste**, and a
+stale cached flag then misreads a later plain `Cmd+C` as a slot store —
+**silently clobbering a saved slot**. Read the modifier from each event's own
+flags. See also §4.4, which removes the dependency entirely.
+
+### 5.3 A failed capture must not overwrite a good slot
+
+If nothing usable arrives, leave the slot untouched. Destroying saved content
+because a copy did not land is strictly worse than doing nothing.
+
+### 5.4 Restore must write all formats without clearing between them
+
+On Windows, `clipboard_win::raw::set` **empties the clipboard on every call**.
+On macOS, `clearContents()` must be called **exactly once**, then all items
+written in a single `writeObjects`. Rebuilding items rather than calling
+`setData:forType:` per type is what preserves multi-file copies.
+
+### 5.5 Don't snapshot the live clipboard right before pasting
+
+An earlier Windows version did this and **woke the source app's lazy provider**,
+which re-asserted and clobbered. See §4.6 — macOS now does it deliberately, with
+that risk accepted and documented.
+
+### 5.6 File pastes must be a copy, not a move
+
+Windows needed `Preferred DropEffect = DROPEFFECT_COPY`. macOS needs no
+equivalent: pasting `public.file-url` items into Finder copies. Verified.
+
+### 5.7 Release Shift before injecting the paste
+
+For plain-text paste the user is physically holding Shift. Release it before
+injecting so the target receives a clean `Cmd+V`.
+
+### 5.8 Not every "bug" is a bug
 
 Plain-text paste appeared broken in Google Docs. Diagnostics proved the stripping
-worked correctly — **Google Docs applies destination formatting** to plain-pasted
-text. Verify with a neutral target (TextEdit in plain-text mode) before chasing.
+worked — **Google Docs applies destination formatting**. Verify with a neutral
+target (TextEdit in plain-text mode) before chasing.
+
+### 5.9 Build standalone diagnostic binaries
+
+The pasteboard work was cracked by a scratch `pbdiag` binary outside the repo
+that dumped the pasteboard, probed item-level versus pasteboard-level reads,
+restored snapshots, and injected a bare `Cmd+V`. Seconds per iteration instead of
+a full Tauri rebuild.
+
+Two findings came *only* from it: the promised-data asymmetry (§3.2), and that
+synthetic `Cmd+V` injection works fine in isolation — which is what ruled out an
+entire branch of theories.
+
+**Do this immediately** when behaviour gets confusing.
+
+### 5.10 A bundled `.app` has nowhere to print
+
+GUI stderr is not captured by the unified log. Once installed, the app cannot
+report anything about itself — which is exactly when the permission problems
+happen. `lib.rs::diag()` appends to
+`~/Library/Application Support/com.cqpaster.app/diagnostics.log`.
+
+It records the executable path, both permissions with the raw IOKit value,
+whether `CGEventTapCreate` returned NULL, and a watchdog counting events the tap
+actually delivers. That last one separates three cases that are identical from
+outside: a tap never created, a tap created but starved, and a chord machine
+misreading events that are arriving fine.
+
+**Build this before debugging an installed build, not after.**
+
+### 5.11 AppKit calls must be on the main thread
+
+`NSWindow` calls from the worker thread terminated the process on the first
+chord — clean exit, no panic, nothing logged. Marshal with
+`AppHandle::run_on_main_thread`, which posts and returns.
+
+Distinguish this from §6: the *blocking* main-thread helpers behind Tauri's menu
+setters deadlock when called **from** the main thread. Different API, opposite
+hazard.
+
+### 5.12 Ad-hoc signing invalidates permissions on every build
+
+An ad-hoc signed app has no stable code identity — its designated requirement is
+keyed on `cdhash`, which changes with every build. macOS keys Accessibility and
+Input Monitoring to that identity, so **every rebuild silently invalidates
+permissions the user already granted**. The System Settings entry still looks
+enabled while granting nothing, and from inside the app that is
+indistinguishable from never having been granted.
+
+This made a working dev build completely inert once installed, and cost more
+time than any other single issue.
+
+Signing with a self-signed certificate gives:
+
+```
+designated => identifier "com.cqpaster.app" and certificate root = H"…"
+```
+
+Both halves survive a rebuild, so a permission granted once persists. See §7.2.
+
+### 5.13 An old mounted DMG will be reinstalled by accident
+
+Several builds shipped with the identical filename. An earlier volume stayed
+mounted at `/Volumes/CQ Paster`, so the new one mounted as `/Volumes/CQ Paster 1`
+and the app got dragged across from the **stale** volume — repeatedly, while
+every symptom pointed elsewhere.
+
+Before diagnosing an installed build, always confirm what is actually installed:
+
+```bash
+codesign -d -r- "/Applications/CQ Paster.app" 2>&1 | tail -1
+```
+
+Stamping the DMG filename with a version or build id would prevent this.
+
+### 5.14 A replaced .app keeps running the old binary
+
+macOS keeps a running process alive when its bundle is overwritten. Installing
+over a running CQ Paster leaves the **old** binary running with the new one never
+launched. Quit before installing.
 
 ---
 
-## 7. Tauri specifics already learned
+## 6. Tauri specifics
 
 - **Tray menu event handlers are registered globally**, not per-menu, so
-  `set_menu()` with a rebuilt menu keeps firing the original handler. Verified in
-  the Tauri 2.11.5 source.
+  `set_menu()` with a rebuilt menu keeps firing the original handler.
 - **`run_item_main_thread!` posts to the main-thread event loop and then blocks
   on `rx.recv()`.** Calling a menu setter *from* the main thread deadlocks — and
-  menu-event handlers run on the main thread. `lib.rs::refresh_tray()` therefore
-  **always spawns a thread**. Don't "simplify" that away.
+  menu-event handlers run on the main thread. `refresh_tray()` therefore always
+  spawns a thread. Don't "simplify" that away. Contrast with §5.11.
+- **`set_decorations(true)` does not apply in time to build on.** Reading the
+  style mask afterwards showed `Titled` and `Closable` still absent. Compose the
+  mask explicitly instead.
 - The frontend re-renders wholesale on `state-updated`. Renders are **deferred
-  while the user is typing a folder name**, or the input gets destroyed
-  mid-keystroke.
-- `set_mode` deliberately **emits no event** so the mode toggle can cross-fade in
-  place; the frontend updates its cached state manually to compensate.
+  while the user is typing a folder name**.
+- `set_mode` deliberately **emits no event** so the mode toggle can cross-fade.
 
 ---
 
-## 8. Building the macOS installer
+## 7. macOS platform notes
+
+### 7.1 Windows, chrome and the menu bar
+
+- **`data_dir()`** is `~/Library/Application Support/com.cqpaster.app`.
+  `SlotStore::save` discards its errors, so a bad path loses every slot
+  silently — `ensure_data_dir()` reports that at startup. A bundled `.app` runs
+  with the working directory set to `/`, so a relative fallback always fails.
+- **Menu-bar icon** uses `icon_as_template(true)` with the black artwork. macOS
+  tints it for the current appearance, including the inverted state while the
+  menu is open. **No polling theme watcher is needed** — unlike the Windows
+  `spawn_theme_watcher`. `tray-white.png` is unused on macOS.
+- **`set_tooltip` is a no-op on macOS** — `NSStatusItem` has no tooltip, so
+  "CQ Paster — *folder*" never appears. The `Folder: <name>` submenu label still
+  answers "which folder am I in?".
+- **`ActivationPolicy::Accessory`** makes it a menu-bar app with no Dock icon.
+  Without it Tauri registers as a regular foreground app. Setting `LSUIElement`
+  in `Info.plist` would avoid a possible Dock flash at launch; not done.
+- **Native title bar**: `Titled | Closable | Miniaturizable | Resizable |
+  FullSizeContentView`, transparent title bar, hidden title, zoom button hidden.
+  The window background is painted the same charcoal as the bar because
+  `FullSizeContentView` exposes it along the top edge.
+- **A 1px hairline remains along the top edge in light mode.** It is drawn by
+  the window frame, whose colour follows the window's *appearance*. Forcing a
+  dark appearance removes it, but the web view inherits that and the whole UI
+  pins to the dark theme. Following the system setting was judged worth more.
+
+### 7.2 The popup
+
+> **Original prediction:** the popup needs to be an `NSPanel` with
+> `.nonactivatingPanel` so it never steals focus.
+>
+> **Reality: not needed.** Tauri's `"focus": false` already stops it becoming
+> key — verified by pasting into a focused text field with the popup up and
+> watching the caret keep blinking. No `NSPanel` subclass exists in the port.
+
+What macOS *does* need is collection behaviour and ordering:
+`CanJoinAllSpaces | FullScreenAuxiliary | IgnoresCycle`,
+`NSPopUpMenuWindowLevel`, and `orderFrontRegardless` (an Accessory app is never
+active, so plain `orderFront:` can be dropped).
+
+The popup stays up while Cmd is held and follows the cursor at 30 Hz, polled on
+a worker thread — **not** by tapping mouse-moved events, which would violate
+§5.1. A 10 s cap remains because the Cmd release can be missed during injection.
+
+**Known limitation:** the popup still does not draw over another app's
+full-screen Space, despite the above. Parked, not solved.
+
+### 7.3 Autostart
+
+`tauri-plugin-autostart` with `MacosLauncher::LaunchAgent` works unchanged. But
+the first **release** launch enables it and writes a marker, baking **whatever
+path the app is at** into the login item. Install to `/Applications` *before*
+first launch, or the login item points at `~/Downloads` or a build directory
+forever.
+
+---
+
+## 8. Building and signing
 
 ### Prerequisites
 
 ```bash
 xcode-select --install
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# Node 18+ via nodejs.org or: brew install node
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
 
 ### Dev
@@ -349,101 +498,119 @@ npm install
 npm run tauri dev
 ```
 
+`CQ_DEBUG=1` traces the whole chord pipeline to stderr — arming, copy, paste,
+what was captured with every UTI and byte size, and the pasteboard handback. It
+is **off by default**, worker-thread only, and **logs clipboard text**, so it is
+a debugging aid and not something to leave enabled.
+
+### The signing certificate
+
+The certificate is a local keychain identity, not in the repo. To recreate:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout k.pem -out c.pem -days 3650 \
+  -nodes -subj "/CN=CQ Paster Self Signed/O=CQ Paster/C=US" \
+  -addext "basicConstraints=critical,CA:false" \
+  -addext "keyUsage=critical,digitalSignature" \
+  -addext "extendedKeyUsage=critical,codeSigning"
+openssl pkcs12 -export -out c.p12 -inkey k.pem -in c.pem -passout pass:PW
+security import c.p12 -k ~/Library/Keychains/login.keychain-db \
+  -T /usr/bin/codesign -P PW
+```
+
+`codesign` accepts it without the certificate being trusted, so no trust-store
+change and no admin rights are needed. The first build prompts once for keychain
+access — choose **Always Allow**. `bundle.macOS.signingIdentity` in
+`tauri.conf.json` points at it, and is ignored on Windows.
+
+A build on another Mac needs a certificate of the same name, or the config
+changed. Without it the build silently reverts to ad-hoc signing and
+reintroduces §5.12.
+
 ### Release build
 
 ```bash
-npm run tauri build
-```
-
-Outputs (`bundle.targets` is `"all"` in `tauri.conf.json`):
-
-```
-src-tauri/target/release/bundle/macos/CQ Paster.app
-src-tauri/target/release/bundle/dmg/CQ Paster_0.5.0_x64.dmg
-```
-
-### Universal binary (Apple Silicon + Intel) — recommended for sharing
-
-```bash
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
 npm run tauri build -- --target universal-apple-darwin
 ```
 
+Outputs a universal (`x86_64 arm64`) `.app` and `.dmg`. Verify with
+`lipo -archs` rather than trusting the target name.
+
 ### Gatekeeper
 
-The build is **unsigned**, so macOS will refuse to open it normally
-("damaged / unidentified developer"). Recipients must either:
+Self-signing does **nothing** for other people's Macs — the certificate is not
+trusted, so recipients still need right-click → **Open**, or:
 
-- Right-click the app → **Open** → **Open** in the dialog, or
-- `xattr -dr com.apple.quarantine "/Applications/CQ Paster.app"`
+```bash
+xattr -dr com.apple.quarantine "/Applications/CQ Paster.app"
+```
 
-Proper signing needs an **Apple Developer ID** ($99/yr) plus **notarization**
-(`xcrun notarytool`). The Windows build has the same unsigned caveat with
-SmartScreen, and the user has accepted it for now. Don't sink time into signing
-unless asked.
+Proper distribution needs an **Apple Developer ID** ($99/yr) plus notarization.
+Self-signing solves permission stability, not distribution.
 
-### Publishing a release
+### Resetting permissions during development
 
-Windows releases are published to GitHub Releases with the installer attached.
-Match that: tag `vX.Y.Z`, attach the `.dmg`. Ask before publishing — the user
-drives release timing.
+Only needed when the signing identity changes:
+
+```bash
+tccutil reset Accessibility com.cqpaster.app
+tccutil reset ListenEvent com.cqpaster.app
+```
 
 ---
 
 ## 9. Test matrix
 
-Verify each on macOS. Windows passes all of these.
+Verified on macOS unless noted. Windows passes all of these.
 
 **Chords**
-- [ ] `Cmd+1+C` … `Cmd+9+C` store into the right slot (top row **and** numpad)
-- [ ] `Cmd+N+V` pastes the right slot
-- [ ] `Cmd+Shift+N+V` pastes stripped of formatting (test in TextEdit, not Docs)
-- [ ] Plain `Cmd+C` / `Cmd+V` completely unaffected
-- [ ] Plain `Cmd+C` after a chord does **not** clobber a stored slot (see §6.2)
-- [ ] `Cmd+1`…`Cmd+9` swallowed — browser tabs don't switch
+- [x] `Cmd+1+C` … `Cmd+9+C` store into the right slot
+- [x] `Cmd+N+V` pastes the right slot
+- [x] `Cmd+Shift+N+V` pastes stripped of formatting (tested in TextEdit)
+- [x] Plain `Cmd+C` / `Cmd+V` completely unaffected
+- [x] Plain `Cmd+C` after a chord does **not** clobber a stored slot (§5.2)
+- [x] Plain `Cmd+V` after a chord pastes the user's own clipboard (§4.6)
+- [x] `Cmd+1`…`Cmd+9` swallowed — browser tabs don't switch
 
 **Content types**
-- [ ] Plain text
-- [ ] Rich text / HTML (formatting survives a normal paste)
-- [ ] Images (screenshot → paste into Preview/Notes)
-- [ ] **Files in Finder** — copy files, paste elsewhere; must be a **copy**
-- [ ] Multiple files at once
-- [ ] Password manager content is **skipped** (`org.nspasteboard.ConcealedType`)
+- [x] Plain text
+- [x] Rich text / HTML — including WebKit apps (§3.2)
+- [x] Images — automated live test asserts IHDR dimensions and a byte-identical round trip
+- [x] Files in Finder — pastes as a **copy**
+- [x] Multiple files at once — three items, three distinct paths
+- [ ] Password manager content skipped — **partially deliverable only**, see §3.6
 
 **Folders**
-- [ ] Slots are independent per folder
-- [ ] Clear all / Undo affect only the active folder
-- [ ] Create switches to the new folder
-- [ ] **Main** cannot be renamed or deleted
+- [x] Slots are independent per folder
+- [x] Create switches to the new folder
+- [x] Folders survive a restart
+- [ ] Clear all / Undo scoped to the active folder — unit-tested, not re-checked by hand
 - [ ] Menu-bar folder submenu switches folders
-- [ ] Folders survive a restart
 
 **Windows/UI**
-- [ ] Noob popup appears near the cursor and **never steals focus**
-- [ ] Popup shows the active folder name
-- [ ] Menu bar icon looks right in light and dark
-- [ ] Closing the main window keeps the app alive in the menu bar
-- [ ] Start-on-login works
+- [x] Noob popup appears near the cursor and never steals focus
+- [x] Popup stays while Cmd is held and follows the cursor
+- [x] Menu bar icon looks right in light and dark
+- [ ] Popup over a full-screen app — **known limitation**, §7.2
+- [ ] Start-on-login verified end to end
 
 **Regression**
-- [ ] `cargo test` still passes (11 tests in `slots.rs`)
-- [ ] The **Windows** build still compiles
+- [x] `cargo test` passes — 27 tests (11 original + 16 macOS), plus 4 `#[ignore]`d
+      live tests run with `cargo test -- --ignored`
+- [ ] The **Windows** build still compiles — *cannot be checked from macOS*; no
+      MSVC toolchain. Held by `cfg` discipline alone. A CI matrix building both
+      targets would close this gap.
 
 ---
 
-## 10. Suggested order of work
+## 10. Still open
 
-1. Confirm the current code builds and runs on macOS (UI only). Commit any
-   `cfg` fixes separately.
-2. `data_dir()` for macOS — cheap, unblocks persistence.
-3. Menu-bar template icon.
-4. **Clipboard layer** (`NSPasteboard`) with a standalone diagnostic binary
-   alongside it. Text first, then images, then files.
-5. **`CGEventTap` hook** + Accessibility permission flow. Get plain
-   `Cmd+N+C` / `Cmd+N+V` working with text only.
-6. Non-activating `NSPanel` for the Noob popup.
-7. Plain-text paste variant.
-8. Walk the test matrix.
-9. Universal build → `.dmg`.
-
-Work in small commits and keep Windows green throughout.
+- Re-run the matrix against a **release** build; release timing differs from
+  debug and the copy path is timing-sensitive.
+- Popup over full-screen Spaces (§7.2).
+- `is_sensitive()` is weaker than Windows and cannot reliably skip password
+  managers (§3.6).
+- `CQ_DEBUG` logs clipboard text; decide before release.
+- Stamp the DMG filename with a version or build id (§5.13).
+- Developer ID signing and notarization, if the app is ever distributed beyond
+  a machine that trusts the self-signed certificate.
