@@ -11,7 +11,7 @@ independent set of 9.
 
 | Platform | Status | Latest | Install |
 | --- | --- | --- | --- |
-| **Windows** (x64) | ✅ Available | **v0.5.1** | [Download the installer](https://github.com/radheck1/The-CQ-Paster/releases/latest) |
+| **Windows** (x64) | ✅ Available | **v0.5.2** | [Download the installer](https://github.com/radheck1/The-CQ-Paster/releases/latest) |
 | **macOS** | 🚧 In development | — | Not yet released — see [below](#macos-in-development) |
 
 > **Windows:** the build is not code-signed, so SmartScreen shows an "unknown
