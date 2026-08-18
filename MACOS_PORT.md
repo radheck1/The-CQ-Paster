@@ -247,7 +247,26 @@ plain `Cmd+V` into another chord paste — invisible except in a trace.
 Arm on the initial press only: check `kCGKeyboardEventAutorepeat`. Repeats are
 still swallowed, so the app keeps owning `Cmd+1`–`Cmd+9`.
 
-### 4.6 Give the clipboard back
+### 4.6 The copy path does NOT preserve the user's clipboard — Windows now does
+
+**Divergence, currently unresolved.** Windows gained `capture_previous()`: a
+chord copy stashes the user's clipboard before the app's real copy overwrites it,
+and restores it afterwards, so `Cmd/Ctrl+<N>+C` fills a slot *without* disturbing
+what a plain paste produces. macOS has no equivalent — after a chord copy, the
+system pasteboard holds the copied content.
+
+The Windows guard is the whole trick: the capture is only trusted if the
+sequence number is unchanged both **before and after** the read, otherwise it
+would "restore" the very thing it just stashed and undo the user's copy. The
+macOS analogue would compare `changeCount` the same way, and skip the capture
+entirely when the previous contents are `is_sensitive()`.
+
+Windows also flags an accepted risk there: holding the clipboard open right as
+the source app wants to write can make a non-retrying app lose its copy. On
+macOS the equivalent would be waking a lazy provider — see §3.2, where those
+providers are demonstrably real and load-bearing.
+
+### 4.7 Give the clipboard back after a paste
 
 Pasting a slot works by writing it to the system pasteboard and injecting
 `Cmd+V`. Nothing restores what was there before unless you do it, so slot N
@@ -256,7 +275,15 @@ pairs must stay independent.
 
 The pasteboard is snapshotted before being borrowed and handed back after.
 
-**This reintroduces what §5.5 records as removed on Windows** — reading a lazy
+**This is in direct tension with the Windows guidance.** Windows §6.5 now says
+the *paste* path must not snapshot first and "must not be improved to do so",
+having traced a long-running file-paste bug to exactly that. macOS does it
+anyway, because the user asked for plain `Cmd+V` to keep pasting their own
+clipboard after a chord paste, which cannot be delivered otherwise. If macOS
+starts pasting the wrong content intermittently, **this is the first suspect**,
+and the honest fix may be to drop the handback and accept the Windows behaviour.
+
+This reintroduces what §5.5 records as removed on Windows — reading a lazy
 provider can make the source app re-assert and clobber. macOS has the same
 mechanism, and §3.2 proves those providers are real and load-bearing here. Treat
 intermittent wrong-content pastes as this until proven otherwise.
@@ -548,6 +575,31 @@ xattr -dr com.apple.quarantine "/Applications/CQ Paster.app"
 Proper distribution needs an **Apple Developer ID** ($99/yr) plus notarization.
 Self-signing solves permission stability, not distribution.
 
+### Publishing a release
+
+**One release, both platforms' assets** — do not create a competing release
+scheme. Attach the `.dmg` to the release for the version it was built against,
+alongside the Windows `.exe`, matching the Windows naming convention:
+
+```
+CQ_Paster_0.5.1_x64-setup.exe      <- Windows asset
+CQ_Paster_0.5.1_universal.dmg      <- macOS asset
+```
+
+Tauri emits `CQ Paster_<version>_universal.dmg` with spaces; rename it to match.
+
+Two places must be updated when the Mac build first ships, both of which say
+"in development" until then:
+
+1. **`README.md`** — the *Downloads* table at the top, and the *macOS (in
+   development)* section heading. The "How the two versions will differ" table
+   already written there should stay.
+2. **The GitHub release notes** — replace the *macOS — coming soon* section with
+   real install instructions, including the Gatekeeper workaround and the two
+   permissions the user must grant.
+
+**Ask before publishing.** Releases are public and the user drives timing.
+
 ### Resetting permissions during development
 
 Only needed when the signing identity changes:
@@ -579,6 +631,9 @@ Verified on macOS unless noted. Windows passes all of these.
 - [x] Files in Finder — pastes as a **copy**
 - [x] Multiple files at once — three items, three distinct paths
 - [ ] Password manager content skipped — **partially deliverable only**, see §3.6
+- [ ] A **slow/large** copy captures the new content, not the previous clipboard
+- [ ] A chord fired with **nothing selected** leaves the slot untouched rather
+      than overwriting it with stale content
 
 **Folders**
 - [x] Slots are independent per folder
@@ -605,6 +660,8 @@ Verified on macOS unless noted. Windows passes all of these.
 
 ## 10. Still open
 
+- **Preserve the user's clipboard across a chord copy** (§4.6). Windows has this;
+  macOS does not, so the two platforms currently behave differently.
 - Re-run the matrix against a **release** build; release timing differs from
   debug and the copy path is timing-sensitive.
 - Popup over full-screen Spaces (§7.2).
