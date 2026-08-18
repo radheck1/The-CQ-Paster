@@ -130,6 +130,17 @@ impl ClipSnapshot {
             .find_map(|i| i.find(uti).filter(|d| !d.is_empty()))
     }
 
+    /// True if the source marked this content as not-for-history.
+    ///
+    /// Checked on the captured snapshot rather than the live pasteboard: by the
+    /// time a chord copy has landed, the live pasteboard is the right thing to
+    /// ask about, but asking earlier tests the *previous* clipboard entirely.
+    pub fn is_concealed(&self) -> bool {
+        self.items
+            .iter()
+            .any(|i| i.types.iter().any(|t| t.uti == UTI_CONCEALED))
+    }
+
     fn has(&self, uti: &str) -> bool {
         self.find(uti).is_some()
     }
@@ -560,6 +571,18 @@ mod tests {
         assert_eq!(trimmed.items.len(), 1, "the all-empty item is dropped");
         assert_eq!(trimmed.items[0].types.len(), 1);
         assert_eq!(trimmed.items[0].types[0].uti, "com.apple.webarchive");
+    }
+
+    #[test]
+    fn concealed_content_is_detected_on_the_snapshot() {
+        let plain = ClipSnapshot {
+            items: vec![item(&[(UTI_TEXT, b"ordinary")])],
+        };
+        assert!(!plain.is_concealed());
+        let secret = ClipSnapshot {
+            items: vec![item(&[(UTI_CONCEALED, b"x"), (UTI_TEXT, b"hunter2")])],
+        };
+        assert!(secret.is_concealed());
     }
 
     #[test]

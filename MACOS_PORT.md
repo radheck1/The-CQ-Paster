@@ -247,24 +247,35 @@ plain `Cmd+V` into another chord paste — invisible except in a trace.
 Arm on the initial press only: check `kCGKeyboardEventAutorepeat`. Repeats are
 still swallowed, so the app keeps owning `Cmd+1`–`Cmd+9`.
 
-### 4.6 The copy path does NOT preserve the user's clipboard — Windows now does
+### 4.6 The two-half clipboard contract
 
-**Divergence, currently unresolved.** Windows gained `capture_previous()`: a
-chord copy stashes the user's clipboard before the app's real copy overwrites it,
-and restores it afterwards, so `Cmd/Ctrl+<N>+C` fills a slot *without* disturbing
-what a plain paste produces. macOS has no equivalent — after a chord copy, the
-system pasteboard holds the copied content.
+Both platforms now guarantee the same thing (`MACOS_PORT.md` §6.12 on `main`
+states the contract; this is the macOS implementation of it):
 
-The Windows guard is the whole trick: the capture is only trusted if the
-sequence number is unchanged both **before and after** the read, otherwise it
-would "restore" the very thing it just stashed and undo the user's copy. The
-macOS analogue would compare `changeCount` the same way, and skip the capture
-entirely when the previous contents are `is_sensitive()`.
+- `Cmd + C` → `Cmd + V` always round-trips **the user's own clipboard**
+- `Cmd + <N> + C` → `Cmd + <N> + V` always round-trips **slot N**
+- Neither pair ever disturbs the other
 
-Windows also flags an accepted risk there: holding the clipboard open right as
-the source app wants to write can make a non-retrying app lose its copy. On
-macOS the equivalent would be waking a lazy provider — see §3.2, where those
-providers are demonstrably real and load-bearing.
+It takes two halves, and both are implemented:
+
+**Copy stashes.** The chord passes `C` through, so the app overwrites the
+pasteboard. The user's clipboard is captured first and put back once the slot is
+filled.
+
+**Paste borrows.** See §4.7.
+
+Both use `capture_stable(expected)`, the direct port of the Windows function of
+the same name: `changeCount` must match `expected` (when given) before the read
+and be unchanged after it, or the capture is discarded. That guard is the whole
+trick — a capture taken *after* the app's copy landed is the very content being
+preserved, so restoring it would silently undo the user's copy.
+
+**One deliberate difference from Windows.** Windows samples its baseline
+sequence number inside the hook callback, where the read is a cheap local call.
+`changeCount` is an IPC to the pasteboard server, and §5.1 makes that an
+unacceptable risk in a tap callback, so macOS samples it at the top of the
+worker instead. The cost is a race the app can win, which `capture_stable` then
+rejects — degrading to *not* preserving rather than preserving the wrong thing.
 
 ### 4.7 Give the clipboard back after a paste
 
@@ -275,21 +286,37 @@ pairs must stay independent.
 
 The pasteboard is snapshotted before being borrowed and handed back after.
 
-**This is in direct tension with the Windows guidance.** Windows §6.5 now says
-the *paste* path must not snapshot first and "must not be improved to do so",
-having traced a long-running file-paste bug to exactly that. macOS does it
-anyway, because the user asked for plain `Cmd+V` to keep pasting their own
-clipboard after a chord paste, which cannot be delivered otherwise. If macOS
-starts pasting the wrong content intermittently, **this is the first suspect**,
-and the honest fix may be to drop the handback and accept the Windows behaviour.
+**The handback must also check the pasteboard is still ours.** Record
+`changeCount` right after our own write; if it differs when the delay expires,
+something else changed the clipboard while we waited — the source app
+re-asserting, or the user copying something new inside the window — and that
+content is current now and must win. Skipping the handback there is the
+difference between preserving a clipboard and silently stomping a copy the user
+just made.
+
+**On the hazard this reintroduces** (§5.5, and §6.5 on `main`): reading the
+clipboard at paste time is what the paste path used to avoid. It is now done on
+both platforms, guarded by `capture_stable`, and **verified clear on Windows**
+against a real Explorer multi-file copy — the exact case that produced the
+original bug.
+
+Note that a *synthetic* file list does not test this at all. The hazard only
+exists when a real source app owns the clipboard with a live lazy provider, so a
+hand-built `CF_HDROP` or multi-item `public.file-url` snapshot passes while
+proving nothing. The `#[ignore]`d live tests in `clipboard/macos.rs` are in that
+category — useful for structure, useless for this.
 
 This reintroduces what §5.5 records as removed on Windows — reading a lazy
 provider can make the source app re-assert and clobber. macOS has the same
 mechanism, and §3.2 proves those providers are real and load-bearing here. Treat
 intermittent wrong-content pastes as this until proven otherwise.
 
-The handback is the **one remaining real delay** (180 ms): macOS offers no
-"paste completed" signal. Too short and the target pastes the handed-back
+The handback is the **one remaining real delay** (180 ms) on either platform:
+neither macOS nor Windows has a "paste completed" signal, and reading the
+clipboard does not bump the counter, so there is nothing to wait on. Windows
+records one escape hatch that macOS has no analogue for — delayed rendering, so
+`WM_RENDERFORMAT` fires exactly when the target asks for the data. Unbuilt on
+both. Too short and the target pastes the handed-back
 content; too long and a fast plain `Cmd+V` beats it.
 
 ---
@@ -660,8 +687,6 @@ Verified on macOS unless noted. Windows passes all of these.
 
 ## 10. Still open
 
-- **Preserve the user's clipboard across a chord copy** (§4.6). Windows has this;
-  macOS does not, so the two platforms currently behave differently.
 - Re-run the matrix against a **release** build; release timing differs from
   debug and the copy path is timing-sensitive.
 - Popup over full-screen Spaces (§7.2).

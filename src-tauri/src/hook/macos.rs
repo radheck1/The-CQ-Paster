@@ -464,6 +464,35 @@ extern "C" fn tap_callback(
     }
 }
 
+/// Read the pasteboard only if it can be proved to have held still.
+///
+/// Direct port of the Windows `capture_stable`. `changeCount` must match
+/// `expected` (when given) before the read, and must be unchanged after it —
+/// otherwise the capture is discarded. A snapshot taken while an app was
+/// mid-write is internally inconsistent, and a capture taken *after* the app's
+/// copy landed is the very content we are trying to preserve, so "restoring" it
+/// would silently undo the user's copy.
+///
+/// Also refuses to capture content flagged as sensitive: never re-publish
+/// password-manager content that was marked not to be kept.
+fn capture_stable(expected: Option<i64>) -> Option<crate::clipboard::ClipSnapshot> {
+    let before = clipboard::change_count();
+    if matches!(expected, Some(want) if want != before) {
+        return None;
+    }
+    if clipboard::is_sensitive() {
+        return None;
+    }
+    let snap = clipboard::snapshot().ok()?;
+    if snap.is_empty() {
+        return None;
+    }
+    if clipboard::change_count() != before {
+        return None; // moved underneath us — don't trust it
+    }
+    Some(snap)
+}
+
 /// Capture the pasteboard once it actually holds the copy.
 ///
 /// Waiting on `changeCount` alone is not enough. The counter bumps when the
@@ -580,10 +609,25 @@ fn worker(
             Action::ChordEnd => hide_popup(&app, &state),
             Action::Copy(slot) => {
                 trace(&format!("COPY -> slot {slot}"));
-                if clipboard::is_sensitive() {
-                    trace("  skipped: pasteboard is marked concealed");
-                    continue;
+
+                // A slot copy is a stash: it must fill slot N without disturbing
+                // what a plain Cmd+V pastes. The chord passes C through, so the
+                // app overwrites the pasteboard — capture the user's clipboard
+                // first and put it back once the slot is filled.
+                //
+                // The baseline is sampled here rather than in the tap callback.
+                // Windows samples it in its hook, where reading the sequence
+                // number is a cheap local call; `changeCount` is an IPC to the
+                // pasteboard server, and §5.1 makes that an unacceptable risk in
+                // a tap callback. The cost is a race the app could win, which
+                // `capture_stable` then rejects — degrading to not preserving
+                // rather than preserving the wrong thing.
+                let baseline = clipboard::change_count();
+                let preserved = capture_stable(Some(baseline));
+                if preserved.is_none() {
+                    trace("  note: could not stash the previous clipboard cleanly");
                 }
+
                 let Some(snap) = capture_after_copy() else {
                     // Nothing usable arrived. Leaving the slot untouched is the
                     // only safe move — overwriting it with an empty capture
@@ -591,6 +635,13 @@ fn worker(
                     trace("  SKIPPED: no content published; slot left unchanged");
                     continue;
                 };
+                // Tests the captured content, not the pasteboard as it was
+                // before the copy landed — checking too early asks about the
+                // wrong clipboard entirely.
+                if snap.is_concealed() {
+                    trace("  SKIPPED: copied content is marked concealed");
+                    continue;
+                }
                 let preview = clipboard::preview(&snap);
                 trace(&format!("  stored {}", describe(&preview)));
                 state.folders.lock().unwrap().set(slot, snap, preview);
@@ -617,7 +668,17 @@ fn worker(
                 // put back afterwards. Otherwise a chord paste leaves slot N on
                 // the pasteboard and the user's next plain Cmd+V re-pastes it —
                 // the two pairs must stay independent.
-                let borrowed = clipboard::snapshot().ok().filter(|s| !s.is_empty());
+                // HAZARD: reading here is what the paste path used to avoid —
+                // it can wake a source app's lazy provider, which then
+                // re-asserts and clobbers what we set (§3.2, §5.5).
+                // `capture_stable` is the mitigation: it refuses to hand back
+                // anything it cannot prove it read cleanly, so the worst case
+                // leaves the slot on the pasteboard rather than pasting the
+                // wrong thing. Verified clear on Windows against a real Explorer
+                // multi-file copy, which is the case that produced the original
+                // bug — note a synthetic file list does not test this at all,
+                // since the hazard needs a real owner with a live provider.
+                let borrowed = capture_stable(None);
                 trace(&format!(
                     "  borrowing pasteboard ({})",
                     match &borrowed {
@@ -632,6 +693,10 @@ fn worker(
                     continue;
                 }
 
+                // Remember our own write, so the handback can tell whether the
+                // pasteboard is still ours to give back.
+                let ours = clipboard::change_count();
+
                 injecting.store(true, Ordering::SeqCst);
                 inject_paste();
                 thread::sleep(Duration::from_millis(INJECT_GUARD_MS));
@@ -644,9 +709,19 @@ fn worker(
                 // thing.
                 if let Some(prev) = borrowed {
                     thread::sleep(PASTE_HANDBACK_DELAY);
-                    match clipboard::restore(&prev) {
-                        Ok(()) => trace("  pasteboard handed back"),
-                        Err(e) => trace(&format!("  WARNING: could not hand back: {e}")),
+                    // Only give it back if the pasteboard is still the slot we
+                    // put there. If anything changed it while we waited — the
+                    // source app re-asserting, or the user copying something new
+                    // inside the delay — that is the current clipboard now and
+                    // must win. Without this the handback silently stomps a copy
+                    // the user just made.
+                    if clipboard::change_count() == ours {
+                        match clipboard::restore(&prev) {
+                            Ok(()) => trace("  pasteboard handed back"),
+                            Err(e) => trace(&format!("  WARNING: could not hand back: {e}")),
+                        }
+                    } else {
+                        trace("  handback skipped: pasteboard changed while we waited");
                     }
                 }
             }
