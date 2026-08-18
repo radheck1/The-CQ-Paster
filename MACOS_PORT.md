@@ -679,9 +679,11 @@ Verified on macOS unless noted. Windows passes all of these.
 **Regression**
 - [x] `cargo test` passes — 27 tests (11 original + 16 macOS), plus 4 `#[ignore]`d
       live tests run with `cargo test -- --ignored`
-- [ ] The **Windows** build still compiles — *cannot be checked from macOS*; no
-      MSVC toolchain. Held by `cfg` discipline alone. A CI matrix building both
-      targets would close this gap.
+- [x] The **Windows** build still compiles — checked by CI
+      (`.github/workflows/ci.yml`), which builds and tests both platforms on
+      every pull request. This cannot be checked locally from macOS (no MSVC
+      toolchain), so before CI existed the guarantee rested on `cfg` discipline
+      alone.
 
 ---
 

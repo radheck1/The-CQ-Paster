@@ -1,5 +1,7 @@
 # CQ Paster
 
+[![CI](https://github.com/radheck1/The-CQ-Paster/actions/workflows/ci.yml/badge.svg)](https://github.com/radheck1/The-CQ-Paster/actions/workflows/ci.yml)
+
 An ultra-minimal, hotkey-driven **multi-slot clipboard manager**. Copy up to
 **9 things** into numbered slots and paste them back in any order — without ever
 leaving the keyboard. Group slots into **folders**, each with its own

@@ -1,0 +1,75 @@
+# Compiles and tests both platforms on every push and pull request.
+#
+# The point is narrow and specific: this repo holds one codebase for two
+# platforms, and most of it is shared. A change made on a Mac can break the
+# Windows build without anything failing locally, because the Windows code is
+# behind `#[cfg(windows)]` and a Mac never compiles it. Until now that guarantee
+# rested entirely on cfg discipline and on nobody making a mistake.
+#
+# Deliberately does NOT run `tauri build`. Producing installers would need the
+# macOS signing certificate, which is a local keychain identity and not
+# available to CI — and bundling proves nothing that compiling does not.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Always run both. Knowing only that "something failed" is much less
+      # useful than knowing which platform did.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: macos-latest
+            name: macOS
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.os }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # tauri-build resolves `frontendDist` (../dist) at compile time, so the
+      # frontend has to exist before cargo runs. This also type-checks it.
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked
+
+      # The ignored tests drive the real system clipboard and are excluded by
+      # default; they need a desktop session and would fight the runner.
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      # Warnings are not failures here, but a summary makes a creeping mess
+      # visible instead of scrolling past.
+      - name: Warning summary
+        shell: bash
+        run: |
+          cargo build --manifest-path src-tauri/Cargo.toml --message-format=short 2>&1 \
+            | grep -E "^(warning|src)" | sort | uniq -c | sort -rn | head -20 || true
