@@ -1,7 +1,7 @@
 # CQ Paster — macOS port brief
 
 Handoff document for building the macOS version. Written from the Windows side,
-where v0.5.0 is complete and shipping.
+where v0.5.1 is complete and shipping.
 
 ---
 
@@ -54,8 +54,11 @@ Plain `Cmd+C` / `Cmd+V` must pass through untouched.
 git clone https://github.com/radheck1/The-CQ-Paster.git
 ```
 
-Current version: **v0.5.0**, tagged and released. Windows is feature-complete.
-**No macOS work has been started.**
+Current version: **v0.5.1**, tagged and released. Windows is feature-complete.
+
+macOS work is **in progress** on branch `macos-port`. This brief was written
+before that branch existed, so where the two disagree, the branch is newer —
+except in §6, which is kept current as lessons are resolved.
 
 ### Stack
 
@@ -281,18 +284,33 @@ setting N formats left only the last one. Fix was to empty once, then use
 `clearContents()` must be called **exactly once**, then `setData:forType:` for
 each type. Calling `declareTypes:` repeatedly will wipe earlier types.
 
-### 6.5 Don't snapshot the live clipboard right before **pasting**
+### 6.5 Snapshotting on the paste path — resolved, but handle with care
 
-An earlier version snapshotted the current clipboard immediately before loading a
-slot to paste it, intending to restore it afterwards. This **woke the source
-app's asynchronous/lazy pasteboard provider**, which then re-asserted the
-clipboard and clobbered what we had just set. That is a direct cause of the long
-file-paste bug. The paste path therefore does **not** snapshot first, and must
-not be "improved" to do so. macOS has lazy pasteboard providers too
-(`NSPasteboardItemDataProvider`) — expect the same class of bug.
+**History.** An early version snapshotted the clipboard immediately before
+loading a slot to paste it. This **woke the source app's asynchronous/lazy data
+object**, which re-asserted the clipboard and clobbered what we had just set —
+a direct cause of the long file-paste bug. The rule was then "never snapshot on
+the paste path".
 
-**This applies to the paste path only.** The *copy* path deliberately does
-snapshot beforehand — see §6.11, which has a guard that makes it safe.
+**That rule has been lifted, carefully.** Both platforms now snapshot on the
+paste path, because the round-trip contract in §6.12 cannot be delivered
+otherwise. What makes it safe is the guard, not the avoidance:
+
+- The capture goes through the same `capture_stable()` guard as the copy path —
+  the sequence number / `changeCount` must match **both before and after** the
+  read, or the capture is discarded and the handback skipped entirely.
+- A discarded capture degrades to the old behaviour (slot lingers on the
+  clipboard). It never restores something it isn't sure about.
+
+**Verified on Windows** with the case that produced the original bug: copy
+several files in Explorer, chord-paste them into another folder, then plain
+`Ctrl+V`. Files pasted correctly and the plain clipboard survived.
+
+**Still the most dangerous code in the project.** If you touch the paste path,
+re-run that exact file test. A synthetic file list will not do — the hazard only
+exists when a real source app owns the clipboard with a live lazy provider, so
+a hand-built `CF_HDROP` / `NSFilenamesPboardType` will pass while proving
+nothing.
 
 ### 6.6 File pastes must be a copy, not a move
 
@@ -360,8 +378,8 @@ over-long deadline stalls a subsequent paste, so don't inflate it casually.
 app performs a real copy, the app necessarily overwrites the system clipboard —
 so the previous contents have to be captured and put back.
 
-Implemented in `hook.rs` as `capture_previous()` + a restore after the slot is
-filled. The ordering is:
+Implemented in `hook.rs` as `capture_stable(Some(baseline))` + a restore after
+the slot is filled. The ordering is:
 
 1. Capture the clipboard **before** the copy lands
 2. Wait for the copy and store it into the slot (§6.10)
@@ -384,6 +402,42 @@ right as the source app wants to write to it, so a source app that doesn't retry
 its open could lose the race and fail its copy. Verified working on Windows with
 Explorer multi-file copies, which is the worst case. If macOS shows flaky or
 empty slots after this, that race is the first suspect.
+
+### 6.12 The round-trip contract (both halves, both platforms)
+
+The agreed behaviour, identical on Windows and macOS:
+
+- `Ctrl/Cmd + C` → `Ctrl/Cmd + V` always round-trips **the user's own clipboard**
+- `Ctrl/Cmd + <N> + C` → `Ctrl/Cmd + <N> + V` always round-trips **slot N**
+- Neither pair ever disturbs the other
+
+It takes two halves, and both are now implemented on Windows:
+
+| Half | Mechanism |
+| --- | --- |
+| **Copy** preserves the user's clipboard | §6.11 — capture before the copy lands, restore after the slot is filled |
+| **Paste** hands the clipboard back | §6.5 — borrow the clipboard, restore the slot, inject, wait, hand back |
+
+**Two things the paste handback must get right.**
+
+*The wait.* There is no "paste completed" signal on **either** platform —
+reading the clipboard does not bump the sequence number on Windows, and macOS
+has no equivalent notification. So the handback delay is a genuine fixed guess
+(`PASTE_HANDBACK_MS`, 180 ms on both). Err long: too short and the target app
+reads the handed-back clipboard instead of the slot, pasting the wrong thing.
+
+> The one way to eliminate the guess on Windows is **delayed rendering** — put a
+> promise on the clipboard rather than bytes, and `WM_RENDERFORMAT` tells you
+> exactly when the target asked for the data. It needs a message-only window and
+> has no macOS analogue, so it is unbuilt. Reach for it only if the fixed delay
+> proves troublesome.
+
+*The ownership check.* Before handing back, confirm the clipboard is **still the
+slot you put there** (compare the sequence number against the value recorded
+right after your own write). If anything changed it while you waited — the
+source app re-asserting, or the user copying something new inside the 180 ms
+window — that is the current clipboard now and must win. Without this check the
+handback silently stomps a fresh copy the user just made.
 
 ---
 

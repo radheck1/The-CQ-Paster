@@ -45,6 +45,14 @@ mod windows_impl {
     /// How long to leave the "injecting" guard up so our synthetic keystrokes
     /// pass through the hook untouched.
     const INJECT_GUARD_MS: u64 = 40;
+    /// How long the slot stays on the clipboard after the paste is injected,
+    /// before the user's own clipboard is handed back.
+    ///
+    /// Windows offers no "paste completed" signal — reading the clipboard does
+    /// not bump the sequence number — so this is an unavoidable wait. Err long:
+    /// too short and the target app reads the handed-back clipboard instead of
+    /// the slot, which pastes the wrong thing.
+    const PASTE_HANDBACK_MS: u64 = 180;
     /// Popup auto-hide delay after the last chord activity.
     const POPUP_HIDE_MS: u64 = 2200;
 
@@ -166,7 +174,7 @@ mod windows_impl {
                     // A slot copy is a stash: it should not disturb what a plain
                     // Ctrl+V pastes. Grab the user's current clipboard now, so
                     // it can be put back once the slot is filled.
-                    let preserved = capture_previous(baseline);
+                    let preserved = capture_stable(Some(baseline));
 
                     // Wait for the app to actually finish writing rather than
                     // sleeping a fixed guess. Reading too early captures the
@@ -218,13 +226,27 @@ mod windows_impl {
                         slot_snap
                     };
 
-                    // Load the slot onto the clipboard, then inject a paste. We
-                    // intentionally do NOT snapshot the live clipboard first:
-                    // reading a source app's asynchronous data object can make it
-                    // re-assert the clipboard and clobber what we set.
+                    // A chord paste *borrows* the clipboard: the slot goes on
+                    // just long enough to paste, then the user's own clipboard
+                    // goes back. Without the handback, slot N lingers and the
+                    // next plain Ctrl+V re-pastes it.
+                    //
+                    // HAZARD: reading the clipboard here is exactly what the
+                    // paste path used to avoid — it can wake a source app's
+                    // asynchronous data object, which then re-asserts the
+                    // clipboard and clobbers what we set (the original
+                    // file-paste bug). `capture_stable` is the mitigation: it
+                    // refuses to hand back anything it can't prove it read
+                    // cleanly, so the worst case degrades to leaving the slot on
+                    // the clipboard rather than pasting the wrong thing.
+                    let borrowed = capture_stable(None);
+
                     if clipboard::restore(&to_paste).is_err() {
                         continue;
                     }
+                    // Remember our own write, so the handback can tell whether
+                    // the clipboard is still ours to give back.
+                    let ours = clipboard::sequence_number();
 
                     injecting.store(true, Ordering::SeqCst);
                     // `plain` means Shift is physically held; release it during
@@ -232,23 +254,43 @@ mod windows_impl {
                     inject_paste(plain);
                     thread::sleep(Duration::from_millis(INJECT_GUARD_MS));
                     injecting.store(false, Ordering::SeqCst);
+
+                    if let Some(prev) = borrowed {
+                        thread::sleep(Duration::from_millis(PASTE_HANDBACK_MS));
+                        // Only give it back if the clipboard is still the slot
+                        // we put there. If anything changed it since — the
+                        // source app re-asserting, or the user copying something
+                        // new while we waited — that is the current clipboard
+                        // now and must win.
+                        if clipboard::sequence_number() == ours {
+                            if let Err(e) = clipboard::restore(&prev) {
+                                eprintln!("[cq-paster] clipboard handback failed: {e}");
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    /// Capture the clipboard as it stood *before* the chord's copy lands, so it
-    /// can be restored afterwards.
+    /// Snapshot the clipboard, but only if it holds still across the read.
     ///
-    /// Returns `None` whenever we can't prove the capture predates the copy —
-    /// otherwise we'd "restore" the very thing we just stashed, undoing the
-    /// user's copy. The sequence number is the proof: it must still equal
-    /// `baseline` both before *and* after the read. If the app wrote while we
-    /// were reading, the snapshot may also be internally inconsistent (some
-    /// formats old, some new), and the same check throws it away.
-    fn capture_previous(baseline: u32) -> Option<crate::clipboard::ClipSnapshot> {
-        if clipboard::sequence_number() != baseline {
-            return None; // the copy already landed; too late to preserve
+    /// `expected` pins the sequence number the clipboard must start at. The
+    /// copy path passes the baseline sampled in the hook callback, before the
+    /// app's copy landed; the paste path passes `None` and takes whatever is
+    /// there now.
+    ///
+    /// Returns `None` unless the sequence number matches **both before and
+    /// after** the read. That single check covers three ways this goes wrong:
+    /// capturing after the copy already landed (we would "restore" the very
+    /// thing we just stashed, undoing the user's copy), capturing a snapshot
+    /// that is internally inconsistent because the app wrote mid-read, and
+    /// capturing while another app is mid-write. Callers degrade to not
+    /// preserving rather than restoring something wrong.
+    fn capture_stable(expected: Option<u32>) -> Option<crate::clipboard::ClipSnapshot> {
+        let before = clipboard::sequence_number();
+        if matches!(expected, Some(want) if want != before) {
+            return None;
         }
         // Never re-publish password-manager content we were told not to keep.
         if clipboard::is_sensitive() {
@@ -258,7 +300,7 @@ mod windows_impl {
         if snap.is_empty() {
             return None;
         }
-        if clipboard::sequence_number() != baseline {
+        if clipboard::sequence_number() != before {
             return None; // moved underneath us — don't trust it
         }
         Some(snap)
