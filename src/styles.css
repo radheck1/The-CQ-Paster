@@ -240,6 +240,8 @@ button {
   padding: 0;
   max-height: 190px;
   overflow-y: auto;
+  /* Reserve the scrollbar track so gaining or losing it never shifts the rows. */
+  scrollbar-gutter: stable;
 }
 
 .folder-row {
@@ -251,6 +253,11 @@ button {
   font-size: 12.5px;
   color: var(--text);
   cursor: pointer;
+  /* Tall enough to hold the hover action buttons, which are taller than the
+     row's own text. Without this the row grows on hover, every row below it
+     moves, and the menu itself changes height. */
+  min-height: 26px;
+  box-sizing: border-box;
 }
 
 .folder-row:hover {
@@ -277,26 +284,44 @@ button {
   font-weight: 700;
 }
 
+/* The fill count and the hover actions occupy one fixed box, stacked rather
+   than swapped. An earlier version toggled `display` between them, which looked
+   equivalent but is not: "3/9" and two icon buttons are different widths, so
+   every hover reflowed the row. Reserving the space once means hovering can
+   only change colour.
+   Width fits the two buttons; the count is narrower and right-aligns inside. */
+.fr-tail {
+  position: relative;
+  flex: 0 0 46px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .fr-count {
-  flex: 0 0 auto;
+  position: absolute;
+  right: 0;
   font-size: 11px;
   color: var(--empty);
 }
 
-/* Swap the fill count for the row actions on hover, so nothing shifts. */
 .fr-actions {
-  display: none;
+  position: absolute;
+  right: 0;
+  display: flex;
   gap: 2px;
-  flex: 0 0 auto;
+  /* `visibility`, not `display`: it must keep its box either way. */
+  visibility: hidden;
 }
 
 .folder-row:hover .fr-actions {
-  display: flex;
+  visibility: visible;
 }
 
 /* The home folder has no actions to swap in, so its count stays put. */
 .folder-row:hover:not(.no-actions) .fr-count {
-  display: none;
+  visibility: hidden;
 }
 
 .fr-btn {
@@ -854,11 +879,11 @@ button {
 
 /* Clearly see-through, leaning on the blur above to keep previews readable. */
 [data-platform="macos"] {
-  --popup-bg: rgba(255, 255, 255, 0.75);
+  --popup-bg: rgba(255, 255, 255, 0.8);
 }
 
 @media (prefers-color-scheme: dark) {
   [data-platform="macos"] {
-    --popup-bg: rgba(25, 22, 20, 0.72);
+    --popup-bg: rgba(25, 22, 20, 0.77);
   }
 }

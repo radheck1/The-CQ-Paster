@@ -177,8 +177,10 @@ function folderControl(state: StateDto): string {
                   }">
         <span class="fr-check">${f.active ? CHECK_ICON : ""}</span>
         <span class="fr-name">${escapeHtml(f.name)}</span>
-        <span class="fr-count">${f.filled}/9</span>
-        ${actions}
+        <span class="fr-tail">
+          <span class="fr-count">${f.filled}/9</span>
+          ${actions}
+        </span>
       </li>`;
     })
     .join("");
