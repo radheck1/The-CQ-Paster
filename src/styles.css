@@ -636,6 +636,22 @@ button {
   text-overflow: ellipsis;
 }
 
+/* Hovering a filled slot turns its description into a scrollable strip, so a
+   long copy can be read in full rather than guessed at from 240 characters.
+   The scrollbar is hidden: the row is one line tall and a visible bar would
+   both crowd it and change its height on hover. */
+.slot.filled:hover .s-desc {
+  overflow-x: auto;
+  text-overflow: clip;
+  /* Keeps a flick of the wheel from scrolling the panel behind it as well. */
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.slot.filled:hover .s-desc::-webkit-scrollbar {
+  display: none;
+}
+
 .s-desc.empty {
   color: var(--muted);
 }

@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::{change_count, is_sensitive, init_thread, preview, restore, snapshot, text_only};
+pub use macos::{
+    change_count, full_text, init_thread, is_sensitive, preview, restore, snapshot, text_only,
+};
 // ClipItem/ClipType are re-exported for `slots.rs`'s test helpers, which build
 // a snapshot directly; only ClipSnapshot is needed by non-test code.
 #[cfg(target_os = "macos")]
@@ -546,6 +548,20 @@ pub fn restore(_snap: &ClipSnapshot) -> Result<(), String> {
 }
 
 /// Build a small preview from a snapshot for display purposes.
+/// The slot's full text, for the control panel's scroll-to-read row.
+///
+/// Separate from [`preview`] on purpose: previews are persisted inside
+/// `folders.bin` for every slot of every folder, so they stay short. This reads
+/// the stored bytes on demand and is never written to disk.
+#[cfg(not(target_os = "macos"))]
+pub fn full_text(snap: &ClipSnapshot) -> Option<String> {
+    if let Some(data) = snap.find(CF_UNICODETEXT) {
+        return Some(utf16_to_string(data));
+    }
+    snap.find(CF_TEXT)
+        .map(|d| String::from_utf8_lossy(d).trim_end_matches('\0').to_string())
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn preview(snap: &ClipSnapshot) -> SlotPreview {
     let bytes: usize = snap.formats.iter().map(|f| f.data.len()).sum();

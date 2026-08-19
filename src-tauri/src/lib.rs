@@ -204,6 +204,25 @@ fn copy_slot(index: usize, state: State<'_, Arc<AppState>>) -> bool {
     }
 }
 
+/// The full text of a slot, for hovering to read a long item in the control
+/// panel. Returns `None` for slots holding no text (images, file lists).
+///
+/// Capped: a slot can hold a multi-megabyte paste, and the point is to let a
+/// user read what they copied, not to move the whole payload across the IPC
+/// boundary and lay it out in one line box.
+#[tauri::command]
+fn slot_text(index: usize, state: State<'_, Arc<AppState>>) -> Option<String> {
+    const MAX_CHARS: usize = 20_000;
+    let snap = state.folders.lock().unwrap().get_snapshot(index)?;
+    let text = clipboard::full_text(&snap)?;
+    if text.chars().count() <= MAX_CHARS {
+        return Some(text);
+    }
+    let mut out: String = text.chars().take(MAX_CHARS).collect();
+    out.push('\u{2026}');
+    Some(out)
+}
+
 #[tauri::command]
 fn clear_slot(index: usize, app: AppHandle, state: State<'_, Arc<AppState>>) {
     state.folders.lock().unwrap().clear(index);
@@ -581,7 +600,7 @@ const POPUP_WINDOW_LEVEL: isize = 101;
 /// ordering between the two.
 #[cfg(target_os = "macos")]
 pub(crate) fn make_popup_float(win: &tauri::WebviewWindow) -> Option<(isize, usize)> {
-    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+    use objc2_app_kit::{NSColor, NSWindow, NSWindowCollectionBehavior};
 
     let ptr = win.ns_window().ok()?;
     if ptr.is_null() {
@@ -598,6 +617,18 @@ pub(crate) fn make_popup_float(win: &tauri::WebviewWindow) -> Option<(isize, usi
             | NSWindowCollectionBehavior::IgnoresCycle,
     );
     ns.setLevel(POPUP_WINDOW_LEVEL);
+
+    // Make the window's own transparency explicit rather than relying on it
+    // being applied at some point after the first show.
+    //
+    // The popup's CSS background is translucent (0.8 alpha), which only reads
+    // as translucent over something transparent. While the window is still
+    // opaque, that 0.8 composites over a solid surface and looks completely
+    // solid — the "opaque for a beat, then frosted" flash on first appearance.
+    // Setting it here, and again on every show, means there is no first frame
+    // where it can be wrong.
+    ns.setOpaque(false);
+    ns.setBackgroundColor(Some(&NSColor::clearColor()));
     Some((ns.level(), ns.collectionBehavior().0 as usize))
 }
 
@@ -745,6 +776,7 @@ pub fn run() {
             get_state,
             set_mode,
             copy_slot,
+            slot_text,
             clear_slot,
             clear_all,
             undo_clear,

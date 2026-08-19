@@ -44,6 +44,9 @@ document.documentElement.dataset.platform = IS_MAC ? "macos" : "other";
 
 // Undo-after-clear: how long the Undo button stays offered, and its state.
 const UNDO_MS = 10000;
+
+/** Full slot text, fetched on hover and cached until the state changes. */
+const fullText = new Map<number, string>();
 const svg = (body: string, size = 13) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 
@@ -323,6 +326,58 @@ function wireFolderControl(state: StateDto) {
   }
 }
 
+/**
+ * Hover a filled slot to read the whole item.
+ *
+ * The stored preview is capped at 240 characters, because it is persisted into
+ * `folders.bin` for every slot of every folder. So the full text is fetched on
+ * demand the first time a row is hovered and cached until the state changes —
+ * nothing extra is written to disk, and nothing crosses the IPC boundary until
+ * someone actually looks.
+ */
+function wireSlotScrolling(root: HTMLElement) {
+  root.querySelectorAll<HTMLElement>("[data-desc]").forEach((desc) => {
+    const index = Number(desc.dataset.desc);
+
+    desc.addEventListener("mouseenter", async () => {
+      if (fullText.has(index)) {
+        applyFullText(desc, fullText.get(index)!);
+        return;
+      }
+      const text = await invoke<string | null>("slot_text", { index });
+      if (text == null) return; // an image or file list: nothing to expand
+      fullText.set(index, text);
+      // The pointer may have moved on while that was in flight.
+      if (desc.matches(":hover")) applyFullText(desc, text);
+    });
+
+    // A mouse wheel only gives vertical deltas, so translate them — but only
+    // while there is somewhere left to scroll. At either end the event is left
+    // alone so it bubbles and scrolls the slot list, which is the behaviour you
+    // want when a wheel passes over a long row on the way down the panel.
+    desc.addEventListener(
+      "wheel",
+      (e: WheelEvent) => {
+        if (e.deltaX !== 0) return; // trackpad already scrolling sideways
+        const max = desc.scrollWidth - desc.clientWidth;
+        if (max <= 0) return;
+        const next = desc.scrollLeft + e.deltaY;
+        if (next < 0 || next > max) return; // at an end — let the list have it
+        desc.scrollLeft = next;
+        e.preventDefault();
+      },
+      { passive: false },
+    );
+  });
+}
+
+/** Swap in the untruncated text and let the row scroll. */
+function applyFullText(desc: HTMLElement, text: string) {
+  if (desc.dataset.expanded === "1") return;
+  desc.dataset.expanded = "1";
+  desc.textContent = text;
+}
+
 // ---------------------------------------------------------------------------
 // Main view: the control panel.
 // ---------------------------------------------------------------------------
@@ -333,7 +388,7 @@ function renderMain(state: StateDto) {
     .map((s) => {
       const filled = s.filled;
       const meta = filled
-        ? `<div class="s-desc">${escapeHtml(describe(s.preview))}</div>
+        ? `<div class="s-desc" data-desc="${s.index}">${escapeHtml(describe(s.preview))}</div>
            <div class="s-kind">${s.preview!.kind} · ${fmtBytes(s.preview!.bytes)}</div>`
         : `<div class="s-desc empty">empty... <b>${MOD}+${s.index}+C</b> to fill</div>`;
       const clearBtn = filled
@@ -409,6 +464,8 @@ function renderMain(state: StateDto) {
         <span class="tip">You can close this window,<br />CQ Paster runs in the background</span>
       </footer>
     </div>`;
+
+  wireSlotScrolling(app);
 
   const win = getCurrentWindow();
   app.querySelector<HTMLButtonElement>("#tb-min")?.addEventListener("click", () => {
@@ -544,7 +601,11 @@ async function boot() {
   } catch (e) {
     console.error("get_state failed", e);
   }
-  await listen<StateDto>("state-updated", (ev) => render(ev.payload));
+  await listen<StateDto>("state-updated", (ev) => {
+    // A slot may have been refilled, so any expanded text is stale.
+    fullText.clear();
+    render(ev.payload);
+  });
 }
 
 boot();

@@ -399,6 +399,18 @@ fn png_dimensions(data: &[u8]) -> (Option<i32>, Option<i32>) {
     (Some(w), Some(h))
 }
 
+/// The slot's full text, for the control panel's scroll-to-read row.
+///
+/// Separate from [`preview`] on purpose: previews are persisted inside
+/// `folders.bin` for every slot of every folder, so they stay short. This reads
+/// the stored bytes on demand and is never written to disk.
+pub fn full_text(snap: &ClipSnapshot) -> Option<String> {
+    if let Some(data) = snap.find(UTI_TEXT) {
+        return Some(String::from_utf8_lossy(data).trim_matches('\0').to_string());
+    }
+    snap.find(UTI_TEXT16).map(|d| utf16_external_to_string(d))
+}
+
 /// Build the popup/control-panel preview for a snapshot.
 pub fn preview(snap: &ClipSnapshot) -> SlotPreview {
     let bytes: usize = snap
