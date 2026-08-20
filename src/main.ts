@@ -40,6 +40,9 @@ const app = document.getElementById("app")!;
 const IS_MAC = navigator.userAgent.includes("Mac");
 /** The trigger key, as the user should see it written. */
 const MOD = IS_MAC ? "⌘" : "Ctrl";
+// Already set by the inline script in index.html, which has to run before the
+// first paint. Repeated here only so the attribute still lands if that script
+// is ever removed; it is idempotent.
 document.documentElement.dataset.platform = IS_MAC ? "macos" : "other";
 
 // Undo-after-clear: how long the Undo button stays offered, and its state.

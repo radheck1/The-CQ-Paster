@@ -3,6 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Set before the first paint, deliberately inline and synchronous.
+      //
+      // Platform-scoped CSS ([data-platform="macos"]) is what makes the popup
+      // translucent, drops its shadow and raises its blur. Leaving it to the
+      // deferred module meant the first frame rendered with the Windows values
+      // — near-opaque, shadowed, weakly blurred — and then snapped once the
+      // module ran. That was the popup's "opaque for a beat" flash.
+      document.documentElement.dataset.platform =
+        navigator.userAgent.includes("Mac") ? "macos" : "other";
+    </script>
     <link rel="stylesheet" href="/src/styles.css" />
     <title>CQ Paster</title>
     <script type="module" src="/src/main.ts" defer></script>

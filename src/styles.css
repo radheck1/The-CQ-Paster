@@ -62,6 +62,11 @@ body {
   margin: 0;
   padding: 0;
   color: var(--text);
+  /* Transparent until a window opts out. `data-window` is set from JS once the
+     Tauri label is known, so the popup would otherwise paint an opaque page
+     background for its first frame — the same class of bug as the platform
+     attribute above. The main window sets its own background below. */
+  background: transparent;
 }
 
 /* Main control-panel window has a solid background. */
