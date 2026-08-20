@@ -601,6 +601,7 @@ async function boot() {
   try {
     const state = await invoke<StateDto>("get_state");
     render(state);
+    dropInitialFocus();
   } catch (e) {
     console.error("get_state failed", e);
   }
@@ -608,6 +609,27 @@ async function boot() {
     // A slot may have been refilled, so any expanded text is stale.
     fullText.clear();
     render(ev.payload);
+  });
+}
+
+/**
+ * Leave nothing focused when a window opens.
+ *
+ * The webview hands focus to the first control it finds, so a freshly opened
+ * control panel drew a focus ring around the folder pill — a selection the user
+ * never made. `:focus-visible` does not suppress it: that focus arrives with no
+ * pointer event before it, so the browser's heuristic reasonably calls it
+ * keyboard-driven and draws the ring.
+ *
+ * Blurring once, after the first paint, is the honest fix — the window opens
+ * with nothing focused, exactly as if the webview had not intervened. Tab still
+ * works normally from there, and this never runs again, so it cannot steal
+ * focus from someone typing a folder name.
+ */
+function dropInitialFocus() {
+  requestAnimationFrame(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (el && el !== document.body) el.blur();
   });
 }
 
