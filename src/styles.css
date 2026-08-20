@@ -18,7 +18,7 @@
   --accent-2: #3a5bd9;
   --empty: #98a2b3;
   --danger: #d92d20;
-  --popup-bg: rgba(255, 255, 255, 0.9);
+  --popup-bg: #ffffff;
   --popup-border: #d5dae4;
   --slot-hover: #eef1f6;
   --copied-bg: rgba(47, 73, 176, 0.12);
@@ -43,7 +43,7 @@
     --accent-2: #7aa2ff;
     --empty: #6b7280;
     --danger: #ff6b6b;
-    --popup-bg: rgba(25, 22, 20, 0.95);
+    --popup-bg: #191614;
     --popup-border: #37322c;
     --slot-hover: #1f2632;
     --copied-bg: rgba(91, 140, 255, 0.16);
@@ -742,14 +742,24 @@ button {
 }
 
 /* ===== Cursor popup ===== */
+/* Deliberately solid, with no shadow and no backdrop-filter.
+   
+   This style is shared by both platforms on purpose. The popup used to be
+   translucent on macOS via a [data-platform="macos"] override, and because that
+   attribute is set from script, the first painted frame used the base style and
+   then snapped to the macOS one — the "opaque for a beat" flash. A single style
+   for both platforms means there is no difference to transition between, so the
+   flash cannot happen regardless of when the attribute lands.
+   
+   The window itself stays transparent: that is what lets the rounded corners
+   sit over the desktop instead of on a square backing. Only the card is solid,
+   which is also why blurring behind it would be wasted work. */
 .popup {
   background: var(--popup-bg);
   border: 1px solid var(--popup-border);
   border-radius: 12px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35);
   overflow: hidden;
   width: 288px;
-  backdrop-filter: blur(6px);
 }
 
 .popup-head {
@@ -886,25 +896,6 @@ button {
   padding-left: 0;
 }
 
-/* ===== macOS: cursor popup ===== */
-
-/* No drop shadow: the popup sits directly over whatever the user is working on
-   and the shadow read as a heavy dark box around it. */
-[data-platform="macos"] .popup {
-  box-shadow: none;
-  /* Stronger blur to compensate — the frosting, not a shadow, is what separates
-     the popup from the content behind it. */
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
-}
-
-/* Clearly see-through, leaning on the blur above to keep previews readable. */
-[data-platform="macos"] {
-  --popup-bg: rgba(255, 255, 255, 0.8);
-}
-
-@media (prefers-color-scheme: dark) {
-  [data-platform="macos"] {
-    --popup-bg: rgba(25, 22, 20, 0.77);
-  }
-}
+/* The popup deliberately has no macOS-specific styling — see the note on
+   `.popup`. Any platform-scoped override here reintroduces the first-frame
+   flash, because the attribute it depends on is set from script. */
