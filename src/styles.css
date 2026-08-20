@@ -80,6 +80,17 @@ body[data-window="popup"] {
   overflow: hidden;
 }
 
+/* Only draw a focus ring for keyboard navigation.
+   
+   The webview gives focus to the first control when the window opens, so a
+   freshly launched app showed a blue ring around the folder pill — it reads as
+   a selection the user never made. :focus-visible is the browser's own
+   "was this focus keyboard-driven?" heuristic, so tabbing still gets a ring,
+   which is the case where it genuinely matters. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
 button {
   font: inherit;
   cursor: pointer;
