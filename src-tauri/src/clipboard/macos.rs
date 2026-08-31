@@ -399,6 +399,16 @@ fn png_dimensions(data: &[u8]) -> (Option<i32>, Option<i32>) {
     (Some(w), Some(h))
 }
 
+/// The slot's image, in a container an image decoder understands.
+///
+/// Both types are already real file formats here, so they pass straight
+/// through — unlike Windows, where a clipboard DIB has no file header at all.
+pub fn image_bytes(snap: &ClipSnapshot) -> Option<Vec<u8>> {
+    snap.find(UTI_PNG)
+        .or_else(|| snap.find(UTI_TIFF))
+        .map(|d| d.to_vec())
+}
+
 /// The slot's full text, for the control panel's scroll-to-read row.
 ///
 /// Separate from [`preview`] on purpose: previews are persisted inside

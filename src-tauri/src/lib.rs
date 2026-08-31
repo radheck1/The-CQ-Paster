@@ -223,6 +223,37 @@ fn slot_text(index: usize, state: State<'_, Arc<AppState>>) -> Option<String> {
     Some(out)
 }
 
+/// A small PNG thumbnail of an image slot, as a `data:` URL.
+///
+/// Generated on demand and never persisted. The stored snapshot holds the image
+/// at full size — a screenshot is comfortably over 100KB — and `SlotPreview` is
+/// written into `folders.bin` for every slot of every folder, so putting a
+/// thumbnail there would bloat the file and change its bincode layout.
+///
+/// Downscaling here rather than in CSS keeps the IPC payload to a few KB
+/// instead of shipping a full screenshot across to be drawn 60px tall.
+#[tauri::command]
+fn slot_thumbnail(index: usize, state: State<'_, Arc<AppState>>) -> Option<String> {
+    use base64::Engine as _;
+
+    // Matches the CSS bounds. `thumbnail` fits within them and keeps the aspect
+    // ratio, so a wide screenshot stays wide.
+    const MAX_W: u32 = 120;
+    const MAX_H: u32 = 60;
+
+    let snap = state.folders.lock().unwrap().get_snapshot(index)?;
+    let raw = clipboard::image_bytes(&snap)?;
+    let decoded = image::load_from_memory(&raw).ok()?;
+    let thumb = decoded.thumbnail(MAX_W, MAX_H);
+
+    let mut png = std::io::Cursor::new(Vec::new());
+    thumb.write_to(&mut png, image::ImageFormat::Png).ok()?;
+    Some(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    ))
+}
+
 #[tauri::command]
 fn clear_slot(index: usize, app: AppHandle, state: State<'_, Arc<AppState>>) {
     state.folders.lock().unwrap().clear(index);
@@ -777,6 +808,7 @@ pub fn run() {
             set_mode,
             copy_slot,
             slot_text,
+            slot_thumbnail,
             clear_slot,
             clear_all,
             undo_clear,

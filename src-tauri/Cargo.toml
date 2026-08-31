@@ -20,6 +20,11 @@ tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
+# Both already in the tree transitively, so making them direct costs no extra
+# build time. Used only to turn a stored clipboard image into a small PNG
+# thumbnail for the control panel.
+image = { version = "0.25", default-features = false, features = ["png", "bmp", "tiff"] }
+base64 = "0.22"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Window transparency needs both the config flag and this Cargo feature. Adding

@@ -652,6 +652,21 @@ button {
   text-overflow: ellipsis;
 }
 
+/* A small look at what an image slot holds. Bounded rather than sized, so the
+   aspect ratio is whatever was copied; the backend downscales to match, so this
+   is a guard rather than the thing doing the shrinking. Kept modest on purpose:
+   at 100px tall, nine image slots would make the window taller than a laptop
+   screen, since it resizes to fit its content. */
+.s-thumb {
+  display: block;
+  max-width: 120px;
+  max-height: 60px;
+  margin: 2px 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  object-fit: contain;
+}
+
 /* The colour a slot holds, shown beside the code itself. Bordered so a white or
    near-white value is still a visible square rather than a gap. */
 .s-swatch {

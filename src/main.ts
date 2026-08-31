@@ -50,6 +50,8 @@ const UNDO_MS = 10000;
 
 /** Full slot text, fetched on hover and cached until the state changes. */
 const fullText = new Map<number, string>();
+/** Slot thumbnails as data URLs, fetched on render and cached the same way. */
+const thumbs = new Map<number, string>();
 const svg = (body: string, size = 13) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 
@@ -404,6 +406,38 @@ function wireSlotScrolling(root: HTMLElement) {
   });
 }
 
+/**
+ * Fill in each image slot's thumbnail.
+ *
+ * Fetched per render rather than sent with the state: a stored image is the
+ * full-size original, and `SlotPreview` is persisted for every slot of every
+ * folder, so neither the preview nor the state payload is the place for it. The
+ * backend downscales to a few KB before it crosses the IPC boundary.
+ *
+ * A slot whose image cannot be decoded simply loses the element and keeps its
+ * text description, so an unsupported format degrades rather than showing a
+ * broken image.
+ */
+function wireThumbnails(root: HTMLElement) {
+  root.querySelectorAll<HTMLImageElement>("[data-thumb]").forEach(async (img) => {
+    const index = Number(img.dataset.thumb);
+    const cached = thumbs.get(index);
+    if (cached) {
+      img.src = cached;
+      return;
+    }
+    const url = await invoke<string | null>("slot_thumbnail", { index });
+    if (!url) {
+      img.remove();
+      return;
+    }
+    thumbs.set(index, url);
+    img.src = url;
+    // The row just got taller, so the window needs to grow with it.
+    fitMainWindow();
+  });
+}
+
 /** Swap in the untruncated text and let the row scroll. */
 function applyFullText(desc: HTMLElement, text: string) {
   if (desc.dataset.expanded === "1") return;
@@ -423,8 +457,15 @@ function renderMain(state: StateDto) {
       const swatch = hexColor(s.preview)
         ? `<span class="s-swatch" style="background-color:${hexColor(s.preview)}" aria-hidden="true"></span>`
         : "";
+      // Images get a thumbnail above the description. The element is rendered
+      // empty and filled in once the backend has produced a small PNG, so a
+      // render is never blocked on decoding an image.
+      const thumb =
+        s.preview?.kind === "image"
+          ? `<img class="s-thumb" data-thumb="${s.index}" alt="" />`
+          : "";
       const meta = filled
-        ? `<div class="s-desc" data-desc="${s.index}" data-kind="${s.preview!.kind}">${escapeHtml(
+        ? `<div class="s-desc" data-desc="${s.index}" data-kind="${s.preview!.kind}">${thumb}${escapeHtml(
             describe(s.preview),
           )}${swatch}</div>
            <div class="s-kind">${s.preview!.kind} · ${fmtBytes(s.preview!.bytes)}</div>`
@@ -504,6 +545,7 @@ function renderMain(state: StateDto) {
     </div>`;
 
   wireSlotScrolling(app);
+  wireThumbnails(app);
 
   const win = getCurrentWindow();
   app.querySelector<HTMLButtonElement>("#tb-min")?.addEventListener("click", () => {
@@ -641,8 +683,9 @@ async function boot() {
     console.error("get_state failed", e);
   }
   await listen<StateDto>("state-updated", (ev) => {
-    // A slot may have been refilled, so any expanded text is stale.
+    // A slot may have been refilled, so any cached content is stale.
     fullText.clear();
+    thumbs.clear();
     render(ev.payload);
   });
 }

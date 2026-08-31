@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    change_count, full_text, init_thread, is_sensitive, preview, restore, snapshot, text_only,
+    change_count, full_text, image_bytes, init_thread, is_sensitive, preview, restore, snapshot,
+    text_only,
 };
 // ClipItem/ClipType are re-exported for `slots.rs`'s test helpers, which build
 // a snapshot directly; only ClipSnapshot is needed by non-test code.
@@ -548,6 +549,51 @@ pub fn restore(_snap: &ClipSnapshot) -> Result<(), String> {
 }
 
 /// Build a small preview from a snapshot for display purposes.
+/// The slot's image, in a container an image decoder understands.
+///
+/// A clipboard DIB is a bare `BITMAPINFOHEADER` followed by pixels, with **no
+/// file header** — nothing will decode it as-is. Prepending the 14-byte
+/// `BITMAPFILEHEADER` turns it into a BMP, which is exactly how a .bmp file is
+/// written by hand.
+///
+/// The pixel offset has to account for whatever sits between the header and the
+/// pixels: a colour palette for <=8bpp images, and three channel masks for
+/// BI_BITFIELDS under the 40-byte header (a V5 header carries its masks inside
+/// itself). Getting that offset wrong decodes as garbage rather than failing, so
+/// it is computed rather than assumed.
+///
+/// Returns `None` rather than guessing when the header is too short to read.
+#[cfg(not(target_os = "macos"))]
+pub fn image_bytes(snap: &ClipSnapshot) -> Option<Vec<u8>> {
+    const BI_BITFIELDS: u32 = 3;
+    let dib = snap.find(CF_DIBV5).or_else(|| snap.find(CF_DIB))?;
+    if dib.len() < 40 {
+        return None;
+    }
+    let u32_at = |o: usize| u32::from_le_bytes([dib[o], dib[o + 1], dib[o + 2], dib[o + 3]]);
+    let header_size = u32_at(0) as usize;
+    let bit_count = u16::from_le_bytes([dib[14], dib[15]]) as u32;
+    let compression = u32_at(16);
+    let clr_used = u32_at(32);
+
+    let masks = if compression == BI_BITFIELDS && header_size == 40 { 12 } else { 0 };
+    let palette = if bit_count <= 8 {
+        let entries = if clr_used != 0 { clr_used } else { 1u32 << bit_count };
+        entries as usize * 4
+    } else {
+        clr_used as usize * 4
+    };
+    let off_bits = 14 + header_size + masks + palette;
+
+    let mut bmp = Vec::with_capacity(14 + dib.len());
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&((14 + dib.len()) as u32).to_le_bytes()); // file size
+    bmp.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    bmp.extend_from_slice(&(off_bits as u32).to_le_bytes());
+    bmp.extend_from_slice(dib);
+    Some(bmp)
+}
+
 /// The slot's full text, for the control panel's scroll-to-read row.
 ///
 /// Separate from [`preview`] on purpose: previews are persisted inside
