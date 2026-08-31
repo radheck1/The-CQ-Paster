@@ -97,11 +97,36 @@ function iconFor(kind: string): string {
   }
 }
 
+/** Last path segment, handling both separators. */
+function basename(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+/**
+ * The colour a slot holds, if the copied text is exactly one hex colour.
+ *
+ * Whole-string only, and hex only, both deliberate. Matching inside longer text
+ * would put a swatch beside any prose that happens to mention `#fff`, and bare
+ * `255, 0, 0` is indistinguishable from an ordinary list of numbers.
+ *
+ * The return value is used in a `style` attribute, so the pattern is anchored
+ * and allows only hex digits — never interpolate the raw copied text there.
+ */
+function hexColor(p?: Preview): string | null {
+  if (!p || p.kind !== "text") return null;
+  const t = (p.text ?? "").trim();
+  return /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(t) ? t : null;
+}
+
 function describe(p?: Preview): string {
   if (!p) return "";
   if (p.kind === "text") return (p.text ?? "").trim() || "(empty text)";
   if (p.kind === "files") {
-    if (p.files.length === 1) return p.files[0];
+    // Name only, not the path. Reading left to right, a path front-loads
+    // directories the user does not need and pushes the actual name out of
+    // view. The multi-file branch below already did this; the single-file
+    // branch did not, which is the inconsistency that showed up in use.
+    if (p.files.length === 1) return basename(p.files[0]);
     return `${p.files.length} files — ${p.files
       .map((f) => f.split(/[\\/]/).pop())
       .join(", ")}`;
@@ -343,6 +368,11 @@ function wireSlotScrolling(root: HTMLElement) {
     const index = Number(desc.dataset.desc);
 
     desc.addEventListener("mouseenter", async () => {
+      // Only text expands. A file row shows a filename by design, and replacing
+      // it with the clipboard's own text would undo that; a row that already
+      // fits has nothing to reveal, and rewriting it would drop the swatch.
+      if (desc.dataset.kind !== "text") return;
+      if (desc.scrollWidth <= desc.clientWidth) return;
       if (fullText.has(index)) {
         applyFullText(desc, fullText.get(index)!);
         return;
@@ -390,8 +420,13 @@ function renderMain(state: StateDto) {
   const slotRows = state.slots
     .map((s) => {
       const filled = s.filled;
+      const swatch = hexColor(s.preview)
+        ? `<span class="s-swatch" style="background-color:${hexColor(s.preview)}" aria-hidden="true"></span>`
+        : "";
       const meta = filled
-        ? `<div class="s-desc" data-desc="${s.index}">${escapeHtml(describe(s.preview))}</div>
+        ? `<div class="s-desc" data-desc="${s.index}" data-kind="${s.preview!.kind}">${escapeHtml(
+            describe(s.preview),
+          )}${swatch}</div>
            <div class="s-kind">${s.preview!.kind} · ${fmtBytes(s.preview!.bytes)}</div>`
         : `<div class="s-desc empty">empty... <b>${MOD}+${s.index}+C</b> to fill</div>`;
       const clearBtn = filled

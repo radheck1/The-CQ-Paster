@@ -652,6 +652,18 @@ button {
   text-overflow: ellipsis;
 }
 
+/* The colour a slot holds, shown beside the code itself. Bordered so a white or
+   near-white value is still a visible square rather than a gap. */
+.s-swatch {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-left: 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  vertical-align: -2px;
+}
+
 /* Hovering a filled slot turns its description into a scrollable strip, so a
    long copy can be read in full rather than guessed at from 240 characters.
    The scrollbar is hidden: the row is one line tall and a visible bar would
