@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import * as jotter from "./jotter";
+import * as reminders from "./reminders";
 
 type Preview = {
   kind: "text" | "image" | "files" | "other";
@@ -77,6 +79,12 @@ let editing: Editing | null = null;
 let confirmDelete: number | null = null;
 /** Set when a state update arrives mid-edit; applied once the edit finishes. */
 let deferred: StateDto | null = null;
+
+/**
+ * Which side of the Paster / Jotter switch is showing. macOS only: on Windows it
+ * stays "paster", and every code path below behaves exactly as it did before.
+ */
+let view: jotter.View = "paster";
 
 const MAX_NAME = 24;
 
@@ -175,8 +183,45 @@ function renderPopup(state: StateDto) {
 // Folder picker: a pill showing the active folder, opening a dropdown of all
 // folders plus a permanent "create" row.
 // ---------------------------------------------------------------------------
-function folderControl(state: StateDto): string {
-  const rows = state.folders
+/**
+ * What the folder dropdown lists and does. Paster's folders live in the backend,
+ * Jotter's (macOS) in `jotter.ts`; the dropdown itself is the same for both.
+ */
+type FolderSource = {
+  folders: { id: number; name: string; active: boolean; permanent: boolean; count: string }[];
+  activeId: number;
+  activeName: string;
+  pillTitle: string;
+  create(name: string): void;
+  rename(id: number, name: string): void;
+  select(id: number): void;
+  remove(id: number): void;
+  /** Runs when a name edit ends, just before the redraw. */
+  afterEdit?(): void;
+};
+
+function pasterFolders(state: StateDto): FolderSource {
+  return {
+    folders: state.folders.map((f) => ({ ...f, count: `${f.filled}/9` })),
+    activeId: state.activeFolder,
+    activeName: state.folderName,
+    pillTitle: "Folder — each has its own 9 slots",
+    create: (name) => invoke("create_folder", { name }),
+    rename: (id, name) => invoke("rename_folder", { id, name }),
+    select: (id) => invoke("select_folder", { id }),
+    remove: (id) => invoke("delete_folder", { id }),
+    // A state update that arrived mid-edit was held back; apply it now.
+    afterEdit: () => {
+      if (deferred) {
+        latest = deferred;
+        deferred = null;
+      }
+    },
+  };
+}
+
+function folderControl(source: FolderSource): string {
+  const rows = source.folders
     .map((f) => {
       if (editing?.kind === "rename" && editing.id === f.id) {
         return `<li class="folder-row editing">
@@ -211,7 +256,7 @@ function folderControl(state: StateDto): string {
         <span class="fr-check">${f.active ? CHECK_ICON : ""}</span>
         <span class="fr-name">${escapeHtml(f.name)}</span>
         <span class="fr-tail">
-          <span class="fr-count">${f.filled}/9</span>
+          <span class="fr-count">${f.count}</span>
           ${actions}
         </span>
       </li>`;
@@ -229,8 +274,8 @@ function folderControl(state: StateDto): string {
   return `
     <div class="folder-wrap">
       <button class="folder-pill" id="folder-btn" aria-haspopup="true" aria-expanded="${menuOpen}"
-              title="Folder — each has its own 9 slots">
-        <span class="fp-name">${escapeHtml(state.folderName)}</span>
+              title="${source.pillTitle}">
+        <span class="fp-name">${escapeHtml(source.activeName)}</span>
         ${FOLDER_ICON}
       </button>
       <div class="folder-menu"${menuOpen ? "" : " hidden"}>
@@ -248,32 +293,29 @@ function closeMenu() {
   redraw();
 }
 
-/** Finish an edit, applying any state update that arrived while it was open. */
-function endEdit() {
+/** Finish an edit, applying anything the source held back while it was open. */
+function endEdit(source: FolderSource) {
   editing = null;
-  if (deferred) {
-    latest = deferred;
-    deferred = null;
-  }
+  source.afterEdit?.();
   redraw();
 }
 
-function commitEdit(value: string) {
+function commitEdit(value: string, source: FolderSource) {
   const name = value.trim().slice(0, MAX_NAME);
   const was = editing;
   editing = null;
   if (name && was) {
     if (was.kind === "create") {
       menuOpen = false;
-      invoke("create_folder", { name });
+      source.create(name);
     } else {
-      invoke("rename_folder", { id: was.id, name });
+      source.rename(was.id, name);
     }
   }
-  endEdit();
+  endEdit(source);
 }
 
-function wireFolderControl(state: StateDto) {
+function wireFolderControl(source: FolderSource) {
   const q = <T extends HTMLElement>(sel: string) => app.querySelector<T>(sel);
 
   q<HTMLButtonElement>("#folder-btn")?.addEventListener("click", () => {
@@ -289,7 +331,7 @@ function wireFolderControl(state: StateDto) {
       const id = Number(row.dataset.select);
       menuOpen = false;
       confirmDelete = null;
-      if (id !== state.activeFolder) invoke("select_folder", { id });
+      if (id !== source.activeId) source.select(id);
       redraw();
     });
   });
@@ -316,7 +358,7 @@ function wireFolderControl(state: StateDto) {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       confirmDelete = null;
-      invoke("delete_folder", { id: Number(btn.dataset.yes) });
+      source.remove(Number(btn.dataset.yes));
       redraw();
     });
   });
@@ -342,16 +384,16 @@ function wireFolderControl(state: StateDto) {
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        commitEdit(input.value);
+        commitEdit(input.value, source);
       } else if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation(); // don't also close the menu
-        endEdit();
+        endEdit(source);
       }
     });
     // Clicking away commits a non-empty name rather than silently discarding it.
     input.addEventListener("blur", () => {
-      if (editing) commitEdit(input.value);
+      if (editing) commitEdit(input.value, source);
     });
   }
 }
@@ -448,6 +490,39 @@ function applyFullText(desc: HTMLElement, text: string) {
 // ---------------------------------------------------------------------------
 // Main view: the control panel.
 // ---------------------------------------------------------------------------
+function titlebar(name: string): string {
+  return `
+    <div class="titlebar" data-tauri-drag-region>
+      <div class="titlebar-brand">
+        <img class="titlebar-logo" src="/logo-white.png" alt="" />
+        <span>${name}</span>
+      </div>
+      <div class="titlebar-controls">
+        <button class="tb-btn" id="tb-min" title="Minimize" aria-label="Minimize">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="6" width="9" height="1.1" fill="currentColor"/></svg>
+        </button>
+        <button class="tb-btn tb-close" id="tb-close" title="Close" aria-label="Close">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>`;
+}
+
+function helpButton(body: string): string {
+  return `<div class="info" tabindex="0" role="button" aria-label="Shortcuts and help">
+            <span class="info-q" aria-hidden="true">?</span>
+            <div class="info-pop" role="tooltip">${body}</div>
+          </div>`;
+}
+
+/** macOS: the Paster / Jotter switch, in the place Windows has its mode toggle. */
+function viewSwitch(active: jotter.View): string {
+  return `<div class="mode-switch" role="group" aria-label="Paster or Jotter">
+            <button class="mode${active === "paster" ? " active" : ""}" data-view="paster">Paster</button>
+            <button class="mode${active === "jotter" ? " active" : ""}" data-view="jotter">Jotter</button>
+          </div>`;
+}
+
 function renderMain(state: StateDto) {
   const isNoob = state.mode === "noob";
   const hasFilled = state.slots.some((s) => s.filled);
@@ -490,42 +565,34 @@ function renderMain(state: StateDto) {
     .join("");
 
   app.innerHTML = `
-    <div class="titlebar" data-tauri-drag-region>
-      <div class="titlebar-brand">
-        <img class="titlebar-logo" src="/logo-white.png" alt="" />
-        <span>Paster</span>
-      </div>
-      <div class="titlebar-controls">
-        <button class="tb-btn" id="tb-min" title="Minimize" aria-label="Minimize">
-          <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="6" width="9" height="1.1" fill="currentColor"/></svg>
-        </button>
-        <button class="tb-btn tb-close" id="tb-close" title="Close" aria-label="Close">
-          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-        </button>
-      </div>
-    </div>
-    <div class="panel" data-mode="${state.mode}">
+    ${titlebar("Paster")}
+    <div class="panel" data-mode="${IS_MAC ? "noob" : state.mode}">
       <header class="panel-head">
-        ${folderControl(state)}
+        ${folderControl(pasterFolders(state))}
         <div class="head-right">
-          <div class="mode-switch" role="group" aria-label="Mode">
+          ${
+            IS_MAC
+              ? viewSwitch("paster")
+              : `<div class="mode-switch" role="group" aria-label="Mode">
             <button class="mode ${!isNoob ? "active" : ""}" data-mode="master">Master &gt;:)</button>
             <button class="mode ${isNoob ? "active" : ""}" data-mode="noob">Noob :)</button>
-          </div>
-          <div class="info" tabindex="0" role="button" aria-label="Shortcuts and help">
-            <span class="info-q" aria-hidden="true">?</span>
-            <div class="info-pop" role="tooltip">
+          </div>`
+          }
+          ${helpButton(`
               <b>${MOD}+&lt;N&gt;+C</b> copies into slot N<br />
               <b>${MOD}+&lt;N&gt;+V</b> pastes it (add <b>Shift</b> to paste as plain text)<br />
               Plain ${MOD}+C / ${MOD}+V still work normally.<br />
               <b>Click any slot</b> to load it onto the clipboard, then paste with ${MOD}+V.
               <br /><br />
               <b>Folders</b> each hold their own 9 slots — hotkeys, Clear all and Undo
-              apply only to the folder you're in.
+              apply only to the folder you're in.${
+                IS_MAC
+                  ? ""
+                  : `
               <br /><br />
-              <b>Noob</b> shows a popup by your cursor; <b>Master</b> is fully invisible.
-            </div>
-          </div>
+              <b>Noob</b> shows a popup by your cursor; <b>Master</b> is fully invisible.`
+              }
+            `)}
         </div>
       </header>
 
@@ -554,23 +621,28 @@ function renderMain(state: StateDto) {
   app.querySelector<HTMLButtonElement>("#tb-close")?.addEventListener("click", () => {
     win.hide(); // keep running in the tray
   });
-  app.querySelectorAll<HTMLButtonElement>(".mode").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const mode = btn.dataset.mode as "master" | "noob";
-      invoke("set_mode", { mode });
-      // Toggle active in place so the colors cross-fade — a full re-render would
-      // replace the buttons and skip the CSS transition.
-      app.querySelectorAll<HTMLElement>(".mode").forEach((b) => {
-        b.classList.toggle("active", b === btn);
+  // macOS has no modes; its toggle switches between Paster and Jotter.
+  if (IS_MAC) {
+    wireViewSwitch();
+  } else {
+    app.querySelectorAll<HTMLButtonElement>(".mode").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.dataset.mode as "master" | "noob";
+        invoke("set_mode", { mode });
+        // Toggle active in place so the colors cross-fade — a full re-render would
+        // replace the buttons and skip the CSS transition.
+        app.querySelectorAll<HTMLElement>(".mode").forEach((b) => {
+          b.classList.toggle("active", b === btn);
+        });
+        // Drives the slot dots, which take their hue from the mode.
+        app.querySelector<HTMLElement>(".panel")?.setAttribute("data-mode", mode);
+        // `set_mode` deliberately emits no event, so keep the cached state in step
+        // — otherwise the next redraw (e.g. opening the folder menu) would snap
+        // the toggle and the dots back to the old mode.
+        if (latest) latest.mode = mode;
       });
-      // Drives the slot dots, which take their hue from the mode.
-      app.querySelector<HTMLElement>(".panel")?.setAttribute("data-mode", mode);
-      // `set_mode` deliberately emits no event, so keep the cached state in step
-      // — otherwise the next redraw (e.g. opening the folder menu) would snap
-      // the toggle and the dots back to the old mode.
-      if (latest) latest.mode = mode;
     });
-  });
+  }
   app.querySelectorAll<HTMLButtonElement>(".s-clear").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation(); // don't also trigger the slot's copy handler
@@ -604,7 +676,189 @@ function renderMain(state: StateDto) {
     invoke("undo_clear"); // restores slots and emits state-updated → re-render
   });
 
-  wireFolderControl(state);
+  wireFolderControl(pasterFolders(state));
+}
+
+// ---------------------------------------------------------------------------
+// Jotter view (macOS): the same chrome as Paster, around a notepad.
+// ---------------------------------------------------------------------------
+const JOTTER_HELP = `
+              <b>Return</b> starts a new line with its own dot.<br />
+              <b>Tab</b> tucks a line under the one above; <b>Shift+Tab</b> brings it back out.<br />
+              <b>Click a dot</b> to cross out that line and everything tucked under it. Click
+              it again to bring them back.
+              <br /><br />
+              <b>Folders</b> each hold their own note — Clear all and Undo apply only to the
+              folder you're in.
+              <br /><br />
+              <b>The clock</b> beside the folder sets reminders for that folder: how often,
+              when, and which sound.
+              <br /><br />
+              Notes save as you type. Slot hotkeys still work here:
+              <b>${MOD}+&lt;N&gt;+V</b> pastes a slot into the note.`;
+
+function jotterFolders(): FolderSource {
+  return {
+    folders: jotter.folderList(),
+    activeId: jotter.activeId(),
+    activeName: jotter.activeName(),
+    pillTitle: "Folder — each has its own note",
+    create: (name) => {
+      jotter.createFolder(name);
+      jotter.focus();
+    },
+    rename: (id, name) => jotter.renameFolder(id, name),
+    select: (id) => {
+      jotter.selectFolder(id);
+      jotter.focus();
+    },
+    remove: (id) => jotter.deleteFolder(id),
+  };
+}
+
+function renderJotter() {
+  document.body.dataset.view = "jotter";
+  app.innerHTML = `
+    ${titlebar("Jotter")}
+    <div class="panel jotter" data-mode="noob">
+      <header class="panel-head">
+        <div class="head-left">
+          ${folderControl(jotterFolders())}
+          ${reminders.control()}
+        </div>
+        <div class="head-right">
+          ${viewSwitch("jotter")}
+          ${helpButton(JOTTER_HELP)}
+        </div>
+      </header>
+      <div class="j-host"></div>
+      <footer class="panel-foot"></footer>
+    </div>`;
+  jotter.mount(app.querySelector<HTMLElement>(".j-host")!);
+  wireViewSwitch();
+  wireFolderControl(jotterFolders());
+  reminders.wire();
+  refreshJotterFoot(true);
+}
+
+/**
+ * Jotter's stand-in for a full redraw: rebuild the folder menu and the footer,
+ * never the note. Replacing the note would take it out from under the caret.
+ */
+function redrawJotterChrome() {
+  const wrap = app.querySelector(".folder-wrap");
+  if (wrap) {
+    const source = jotterFolders();
+    wrap.outerHTML = folderControl(source);
+    wireFolderControl(source);
+  }
+  reminders.refresh();
+  refreshJotterFoot(true);
+}
+
+let jotterFootKey = "";
+
+/** Jotter's footer. Called on every edit, so it only rebuilds when it would change. */
+function refreshJotterFoot(force = false) {
+  const foot = app.querySelector(".panel.jotter .panel-foot");
+  if (!foot) return;
+  const key = `${jotter.activeId()}|${jotter.isEmpty()}|${jotter.undoOffered()}`;
+  if (!force && key === jotterFootKey) return;
+  jotterFootKey = key;
+  foot.innerHTML = `
+    <button class="ghost" id="clear-all"${jotter.isEmpty() ? " disabled" : ""}
+      title="Clear the note in “${escapeHtml(jotter.activeName())}” — other folders are untouched">Clear all</button>
+    ${
+      jotter.undoOffered()
+        ? `<button class="ghost undo" id="undo-clear" title="Restore the cleared note">${UNDO_ICON} Undo</button>`
+        : ""
+    }
+    <span class="spacer"></span>
+    <span class="tip">You can close this window,<br />CQ Paster runs in the background</span>`;
+  foot.querySelector("#clear-all")?.addEventListener("click", () => {
+    jotter.clearNote();
+    jotter.focus();
+  });
+  foot.querySelector("#undo-clear")?.addEventListener("click", () => {
+    jotter.undoClear();
+    jotter.focus();
+  });
+}
+
+function wireViewSwitch() {
+  app.querySelectorAll<HTMLButtonElement>(".mode[data-view]").forEach((btn) => {
+    btn.addEventListener("click", () => switchView(btn.dataset.view as jotter.View));
+  });
+}
+
+function switchView(next: jotter.View) {
+  if (next === view) return;
+  const from = view;
+  // Each side has its own folders; a half-finished folder edit doesn't carry over.
+  menuOpen = false;
+  editing = null;
+  confirmDelete = null;
+  reminders.reset();
+  if (deferred) {
+    latest = deferred;
+    deferred = null;
+  }
+  if (next === "jotter") {
+    // Jotter keeps the height Paster had sized the window to.
+    jotter.rememberHeight(window.innerHeight);
+    view = next;
+    jotter.setView(next);
+    renderJotter();
+  } else {
+    jotter.flush();
+    view = next;
+    jotter.setView(next);
+    delete document.body.dataset.view;
+    if (latest) renderMain(latest);
+    fitMainWindow();
+  }
+  crossFade(from, next);
+  if (next === "jotter") jotter.focus();
+}
+
+/**
+ * The switch is rebuilt along with the rest of the page, which would skip its
+ * colour transition. Draw it in the old position first, then flip it.
+ */
+function crossFade(from: jotter.View, to: jotter.View) {
+  const buttons = app.querySelectorAll<HTMLElement>(".mode[data-view]");
+  buttons.forEach((b) => b.classList.toggle("active", b.dataset.view === from));
+  void app.offsetWidth; // commit the old state so the change below animates
+  buttons.forEach((b) => b.classList.toggle("active", b.dataset.view === to));
+}
+
+/**
+ * macOS: load the Jotter and, if the control panel was last left on it, open on
+ * that side at the height it had.
+ */
+async function startJotter() {
+  await jotter.load();
+  jotter.onChange(() => refreshJotterFoot());
+  // "Open Jotter" on a reminder card: land in that folder's note.
+  await listen<number>("jotter-open", ({ payload: id }) => {
+    if (view !== "jotter") switchView("jotter");
+    if (id !== jotter.activeId()) {
+      jotter.selectFolder(id);
+      redraw();
+    }
+    jotter.focus();
+  });
+  let resizeTimer: number | undefined;
+  window.addEventListener("resize", () => {
+    if (view !== "jotter") return;
+    window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(() => jotter.rememberHeight(window.innerHeight), 250);
+  });
+  if (jotter.view() !== "jotter") return;
+  view = "jotter";
+  renderJotter();
+  const h = jotter.savedHeight();
+  if (h) getCurrentWindow().setSize(new LogicalSize(PANEL_WIDTH, h)).catch(() => {});
 }
 
 function escapeHtml(s: string): string {
@@ -621,7 +875,10 @@ const PANEL_WIDTH = 442;
 /** Size the control-panel window to exactly fit its content — no bottom gap,
  *  no scrollbar — and re-fit as slots fill (filled slots are a touch taller). */
 function fitMainWindow() {
+  // Jotter keeps whatever height the window had when it was switched to.
+  if (view === "jotter") return;
   requestAnimationFrame(() => {
+    if (view === "jotter") return; // switched while this frame was pending
     const h = Math.ceil(document.body.getBoundingClientRect().height);
     if (h > 0) {
       getCurrentWindow()
@@ -633,6 +890,10 @@ function fitMainWindow() {
 
 /** Re-render the control panel from the last known state. */
 function redraw() {
+  if (view === "jotter") {
+    redrawJotterChrome();
+    return;
+  }
   if (latest && label !== "popup") {
     renderMain(latest);
     fitMainWindow();
@@ -643,6 +904,12 @@ function render(state: StateDto) {
   if (label === "popup") {
     latest = state;
     renderPopup(state);
+    return;
+  }
+  // Jotter is showing. Keep the state for when Paster comes back, but leave the
+  // page alone: a redraw would take the note out from under the caret.
+  if (view === "jotter") {
+    latest = state;
     return;
   }
   // A re-render replaces the DOM, which would destroy a folder name the user is
@@ -658,11 +925,21 @@ function render(state: StateDto) {
 
 async function boot() {
   document.body.dataset.window = label;
+  // macOS: the Jotter reminder card, in a small window of its own.
+  if (label === "reminder") {
+    await reminders.startCard(app);
+    return;
+  }
   // Re-fit the control panel whenever it's opened/focused, so it can't flash at
   // the initial config size before the content measurement settles.
   if (label === "main") {
     getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (focused) fitMainWindow();
+      if (view === "jotter") {
+        // Reopening the window lands back in the note, ready to type.
+        if (focused && document.activeElement === document.body) jotter.focus();
+        if (!focused) jotter.flush();
+      }
     });
     // Dismiss the folder dropdown on an outside click or Escape. Registered
     // once, on the document, so re-renders don't stack duplicate listeners.
@@ -675,10 +952,12 @@ async function boot() {
       if (e.key === "Escape" && menuOpen) closeMenu();
     });
   }
+  if (IS_MAC && label === "main") await startJotter();
   try {
     const state = await invoke<StateDto>("get_state");
     render(state);
-    dropInitialFocus();
+    // Opening on Jotter puts focus in the note, so leave it there.
+    if (view !== "jotter") dropInitialFocus();
   } catch (e) {
     console.error("get_state failed", e);
   }

@@ -29,7 +29,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::clipboard;
-use crate::{AppState, Mode};
+use crate::AppState;
 
 /// Longest we will wait for the foreground app to publish its copy.
 ///
@@ -180,7 +180,7 @@ fn debug_on() -> bool {
 // ---- Chord machine -----------------------------------------------------------
 
 enum Action {
-    /// Cmd+digit pressed: show the reference popup (Noob mode).
+    /// Cmd+digit pressed: show the reference popup.
     Peek(usize, f64, f64),
     /// Cmd+<N>+C: copy the current selection into slot N.
     Copy(usize),
@@ -729,7 +729,6 @@ fn worker(
     }
 }
 
-/// Refresh frontend state and, in Noob mode, show/keep the cursor popup.
 /// Push fresh state to the frontend without touching the popup's visibility.
 fn refresh_state(app: &AppHandle, state: &Arc<AppState>) {
     let _ = app.emit("state-updated", state.to_dto());
@@ -744,9 +743,7 @@ fn refresh_state(app: &AppHandle, state: &Arc<AppState>) {
 fn show_popup(app: &AppHandle, state: &Arc<AppState>, at: (f64, f64)) {
     refresh_state(app, state);
 
-    if *state.mode.lock().unwrap() != Mode::Noob {
-        return;
-    }
+    // No mode check: macOS has no Master mode, so the popup always shows.
     let Some(win) = app.get_webview_window("popup") else {
         return;
     };

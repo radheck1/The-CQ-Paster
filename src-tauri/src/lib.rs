@@ -1,11 +1,18 @@
 //! CQ Paster — an ultra-minimal multi-slot clipboard manager.
 //!
 //! Lives in the tray. A global keyboard hook (see [`hook`]) implements the
-//! `Ctrl+<N>+C` / `Ctrl+<N>+V` chords over 9 clipboard slots. Two modes:
-//! Master (no UI) and Noob (a reference popup by the cursor).
+//! `Ctrl+<N>+C` / `Ctrl+<N>+V` chords over 9 clipboard slots. On Windows there
+//! are two modes: Master (no UI) and Noob (a reference popup by the cursor).
+//! macOS has no modes — the popup always shows — and its control panel also
+//! hosts CQ Jotter, a notepad (see [`jotter`]) with per-folder reminders (see
+//! [`reminders`]).
 
 mod clipboard;
 mod hook;
+#[cfg(target_os = "macos")]
+mod jotter;
+#[cfg(target_os = "macos")]
+mod reminders;
 mod permissions;
 mod slots;
 
@@ -379,6 +386,8 @@ fn refresh_tray(app: &AppHandle, state: &Arc<AppState>) {
     });
 }
 
+// Windows only: macOS has no modes.
+#[cfg(not(target_os = "macos"))]
 fn toggle_mode(app: &AppHandle, state: &Arc<AppState>) {
     {
         let mut m = state.mode.lock().unwrap();
@@ -422,6 +431,7 @@ fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::men
         .collect();
     let folder_sub = Submenu::with_items(app, format!("Folder: {active_name}"), true, &folder_refs)?;
 
+    #[cfg(not(target_os = "macos"))]
     let mode_i = MenuItemBuilder::with_id("mode", "Toggle Master / Noob mode").build(app)?;
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart_i = CheckMenuItemBuilder::with_id("autostart", "Start on login")
@@ -436,6 +446,7 @@ fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::men
         .items(&[
             &open_i,
             &folder_sub,
+            #[cfg(not(target_os = "macos"))]
             &mode_i,
             &autostart_i,
             &clear_i,
@@ -484,6 +495,7 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
             }
             match id {
                 "open" => show_main(app),
+                #[cfg(not(target_os = "macos"))]
                 "mode" => toggle_mode(app, &menu_state),
                 "autostart" => {
                     let mgr = app.autolaunch();
@@ -816,7 +828,25 @@ pub fn run() {
             rename_folder,
             delete_folder,
             select_folder,
-            show_main_window
+            show_main_window,
+            #[cfg(target_os = "macos")]
+            jotter::jotter_load,
+            #[cfg(target_os = "macos")]
+            jotter::jotter_save,
+            #[cfg(target_os = "macos")]
+            reminders::reminder_present,
+            #[cfg(target_os = "macos")]
+            reminders::reminder_dismiss,
+            #[cfg(target_os = "macos")]
+            reminders::reminder_snooze,
+            #[cfg(target_os = "macos")]
+            reminders::reminder_open,
+            #[cfg(target_os = "macos")]
+            reminders::reminder_test,
+            #[cfg(target_os = "macos")]
+            reminders::reminder_preview_sound,
+            #[cfg(target_os = "macos")]
+            reminders::reminder_next,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -838,6 +868,10 @@ pub fn run() {
                 make_popup_float(&popup);
                 let _ = popup.set_ignore_cursor_events(true);
             }
+
+            // Jotter's reminder card and its schedule.
+            #[cfg(target_os = "macos")]
+            reminders::start(app.handle());
 
             // Main window: closing hides it instead of quitting the app.
             if let Some(main) = app.get_webview_window("main") {

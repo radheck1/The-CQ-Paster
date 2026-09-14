@@ -934,6 +934,575 @@ button {
   padding-left: 0;
 }
 
+/* The folder list reserves a scrollbar track so rows never shift, but with a
+   mouse connected macOS shows full-width scrollbars, and the reserved 17px left
+   every row's hover highlight stopping short of the menu's edge. Seamless rows
+   are worth more here than stability past the point the list starts scrolling. */
+[data-platform="macos"] .folder-list {
+  scrollbar-gutter: auto;
+}
+
 /* The popup deliberately has no macOS-specific styling — see the note on
    `.popup`. Any platform-scoped override here reintroduces the first-frame
    flash, because the attribute it depends on is set from script. */
+
+/* ===== Paster / Jotter switch (macOS) ==========================================
+
+   Sits where Windows has its mode toggle and reuses that styling; only the
+   colours are keyed differently. Paster takes the green, Jotter the orange. */
+.mode[data-view="paster"]::before {
+  background: linear-gradient(135deg, #2e8b57 0%, #2a9d8f 100%);
+}
+
+.mode[data-view="jotter"]::before {
+  background: linear-gradient(135deg, #ab3229 0%, #cd5a2b 100%);
+}
+
+/* ===== CQ Jotter (macOS) =======================================================
+
+   Paster sizes the window to fit its slots. Jotter does the opposite: it keeps
+   whatever height the window has and fills it, scrolling the note inside.
+
+   Several numbers here are mirrored in jotter.ts, which positions the dots in a
+   layer over the text: LINE_PAD_TOP, LINE_HEIGHT, DOT_BOX, DOT_LEFT and INDENT.
+   Change them together. */
+body[data-view="jotter"] {
+  height: 100vh;
+  overflow: hidden;
+}
+
+body[data-view="jotter"] #app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel.jotter {
+  flex: 1;
+  min-height: 0;
+  --jot: #d1552b;
+  --jot-glow: rgba(205, 90, 43, 0.85);
+  --jot-glow-soft: rgba(205, 90, 43, 0.35);
+}
+
+.j-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.j-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 0 10px;
+}
+
+.j-editor {
+  /* Fills the scroller, so a click below the last line still lands in the note. */
+  min-height: 100%;
+  outline: none;
+  font-size: 15px;
+  line-height: 22px; /* LINE_HEIGHT */
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  caret-color: var(--jot);
+  cursor: text;
+}
+
+/* The left padding clears the dot (DOT_LEFT + DOT_BOX + a 4px gap), plus
+   INDENT for each level. */
+.j-line {
+  padding: 3px 10px 3px 32px; /* LINE_PAD_TOP */
+}
+
+.j-line[data-depth="1"] {
+  padding-left: 56px;
+}
+
+.j-line[data-depth="2"] {
+  padding-left: 80px;
+}
+
+.j-line[data-depth="3"] {
+  padding-left: 104px;
+}
+
+.j-line.done {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+/* Zero-sized, so it never covers the text; only the dots inside take clicks. */
+.j-dots {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.j-dot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 22px; /* DOT_BOX */
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  display: grid;
+  place-items: center;
+}
+
+/* The glowing dot of a filled Paster slot, in Jotter's orange. Its clickable
+   box (DOT_BOX) is much larger than the dot, so it stays easy to hit. */
+.j-dot::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background-color: var(--jot);
+  box-shadow: 0 0 6px var(--jot-glow), 0 0 13px var(--jot-glow-soft);
+  transition: transform 0.12s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.j-dot:hover::before {
+  transform: scale(1.25);
+}
+
+.j-dot.done::before {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 2px var(--empty);
+}
+
+/* Crossed out by the line above: brought back from there, not from here. */
+.j-dot.inert {
+  cursor: default;
+}
+
+.j-dot.inert:hover::before {
+  transform: none;
+}
+
+.j-placeholder {
+  position: absolute;
+  top: 9px; /* .j-scroll padding-top + LINE_PAD_TOP */
+  left: 32px;
+  font-size: 15px;
+  line-height: 22px;
+  color: var(--empty);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ===== Jotter reminders (macOS) ================================================
+
+   The clock button beside the folder pill, its settings menu, and the reminder
+   card, which lives in a small transparent window of its own. */
+.head-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rem-wrap {
+  position: relative;
+}
+
+.rem-btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: var(--toggle-bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.rem-btn:hover,
+.rem-btn[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* On for this folder: the clock takes Jotter's orange. */
+.rem-btn.on,
+.rem-btn.on:hover {
+  color: #d1552b;
+}
+
+.rem-btn.on:hover,
+.rem-btn.on[aria-expanded="true"] {
+  border-color: #d1552b;
+}
+
+.rem-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  width: 272px;
+  padding: 12px;
+  background: var(--pop-bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.rem-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.rem-heading {
+  min-width: 0;
+}
+
+.rem-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.rem-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rem-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.rem-switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.rem-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--line);
+  pointer-events: none;
+  transition: background 0.18s ease;
+}
+
+.rem-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.18s ease;
+}
+
+.rem-switch input:checked + .rem-track {
+  background: #d1552b;
+}
+
+.rem-switch input:checked + .rem-track::after {
+  transform: translateX(14px);
+}
+
+.rem-switch input:focus-visible + .rem-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.rem-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  transition: opacity 0.15s ease;
+}
+
+.rem-body:disabled {
+  opacity: 0.45;
+}
+
+.rem-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rem-label {
+  flex: 0 0 44px;
+  color: var(--muted);
+}
+
+.rem-field select,
+.rem-field input {
+  min-width: 0;
+  padding: 4px 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.rem-field select,
+.rem-field input[type="time"] {
+  flex: 1;
+}
+
+#rem-every-custom {
+  width: 58px;
+}
+
+.rem-to,
+.rem-unit {
+  color: var(--muted);
+}
+
+.rem-hint {
+  margin: -2px 0 0 50px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.rem-days {
+  display: flex;
+  gap: 4px;
+  margin-left: 50px;
+}
+
+.rem-day {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.rem-day.on {
+  background: #d1552b;
+  border-color: #d1552b;
+  color: #fff;
+}
+
+.rem-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.rem-next {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.rem-test {
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.rem-test:hover {
+  text-decoration: underline;
+}
+
+/* ---- The card ---- */
+body[data-window="reminder"] {
+  background: transparent;
+  overflow: hidden;
+}
+
+/* Solid, with no shadow, for the same reason as the cursor popup. */
+.rcard {
+  width: 320px;
+  padding: 10px 12px 12px;
+  background: var(--popup-bg);
+  border: 1px solid var(--popup-border);
+  border-radius: 12px;
+  color: var(--text);
+  animation: rcard-in 0.28s ease-out;
+}
+
+@keyframes rcard-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rcard-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.rcard-logo {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+}
+
+.rcard-time {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.rcard-folder + .rcard-folder {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.rcard-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.rcard-name svg {
+  flex: 0 0 auto;
+}
+
+.rcard-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rcard-items li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.rcard-items li[data-depth="1"] {
+  padding-left: 14px;
+}
+
+.rcard-items li[data-depth="2"] {
+  padding-left: 28px;
+}
+
+.rcard-items li[data-depth="3"] {
+  padding-left: 42px;
+}
+
+.rcard-dot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: #d1552b;
+  box-shadow: 0 0 5px rgba(205, 90, 43, 0.85);
+}
+
+.rcard-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rcard-more,
+.rcard-empty {
+  margin-top: 2px;
+  padding-left: 15px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.rcard-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.rcard-btn {
+  flex: 1 1 auto;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rcard-btn:hover {
+  background: var(--slot-hover);
+}
+
+.rcard-btn.primary {
+  background: linear-gradient(135deg, #ab3229 0%, #cd5a2b 100%);
+  border-color: transparent;
+  color: #fff;
+}
+
+.rcard-btn.primary:hover {
+  filter: brightness(1.08);
+}
+
+.rcard-btn.quiet {
+  flex: 0 0 auto;
+  color: var(--muted);
+}

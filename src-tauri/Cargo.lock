@@ -655,6 +655,7 @@ version = "0.5.2"
 dependencies = [
  "base64 0.22.1",
  "bincode",
+ "chrono",
  "clipboard-win",
  "image",
  "objc2",
