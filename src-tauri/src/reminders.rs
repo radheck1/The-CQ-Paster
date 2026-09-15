@@ -21,6 +21,7 @@ use objc2::runtime::NSObjectProtocol;
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSBox, NSBoxType, NSColor, NSEvent, NSScreen, NSSound, NSTitlePosition, NSWindow,
+    NSWorkspace,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use serde::{Deserialize, Serialize};
@@ -404,6 +405,53 @@ fn return_focus(app: &AppHandle) {
     });
 }
 
+/// Log where the control panel and focus are at a moment in a card's life.
+///
+/// There to explain a report that Dismiss brought up the control panel when it
+/// was closed: nothing in the app shows it on Dismiss, so the log records
+/// whether it was really closed and what was frontmost.
+fn log_windows(app: &AppHandle, moment: &'static str) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        // Safe: `run_on_main_thread` guarantees exactly that.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let active = NSApplication::sharedApplication(mtm).isActive();
+        let front = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .and_then(|a| a.localizedName())
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        let panel = handle
+            .get_webview_window("main")
+            .and_then(|w| w.ns_window().ok())
+            .filter(|p| !p.is_null())
+            .map(|p| {
+                let ns: &NSWindow = unsafe { &*(p as *const NSWindow) };
+                format!(
+                    "visible={} key={} on_this_space={} minimised={}",
+                    ns.isVisible(),
+                    ns.isKeyWindow(),
+                    ns.isOnActiveSpace(),
+                    ns.isMiniaturized()
+                )
+            })
+            .unwrap_or_else(|| "missing".into());
+        crate::diag(&format!(
+            "reminder: {moment}: CQ active={active}, frontmost={front}, control panel {panel}"
+        ));
+    });
+}
+
+/// `log_windows` when a card button is pressed, and again a second later.
+fn log_press(app: &AppHandle, pressed: &'static str, later: &'static str) {
+    log_windows(app, pressed);
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        log_windows(&handle, later);
+    });
+}
+
 fn play(app: &AppHandle, name: String) {
     let _ = app.run_on_main_thread(move || {
         if let Some(sound) = NSSound::soundNamed(&NSString::from_str(&name)) {
@@ -532,17 +580,20 @@ pub fn reminder_present(app: AppHandle, height: f64) {
         crate::make_popup_float(&card);
         // Ordered in without activating, like the cursor popup.
         crate::order_popup_front(&card);
+        log_windows(&handle, "card shown");
     });
 }
 
 #[tauri::command]
 pub fn reminder_dismiss(app: AppHandle) {
+    log_press(&app, "Dismiss pressed", "1s after Dismiss");
     hide(&app);
     return_focus(&app);
 }
 
 #[tauri::command]
 pub fn reminder_snooze(app: AppHandle) {
+    log_press(&app, "Snooze pressed", "1s after Snooze");
     let until = Local::now().naive_local() + chrono::Duration::minutes(SNOOZE_MINUTES);
     {
         let mut st = state();

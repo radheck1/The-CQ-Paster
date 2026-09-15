@@ -1,5 +1,5 @@
 /**
- * Jotter reminders (macOS only): the clock button beside the folder pill, its
+ * Jotter reminders (macOS only): the clock button beside the jotpad pill, its
  * settings menu, and the reminder card, which runs in a small window of its own.
  *
  * Settings belong to each folder and are saved with the Jotter document. The
@@ -18,7 +18,7 @@ const DAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
 const icon = (body: string, size: number) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 const CLOCK_ICON = icon(`<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>`, 15);
-const FOLDER_ICON = icon(`<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>`, 11);
+const JOTPAD_ICON = icon(`<rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 2v4M15 2v4M9 11h6M9 15h4"/>`, 11);
 
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -266,7 +266,7 @@ function drawCard(app: HTMLElement, card: Card) {
         : `<div class="rcard-empty">Nothing open right now.</div>`;
       return `
         <section class="rcard-folder">
-          <div class="rcard-name">${FOLDER_ICON}<span>${esc(f.name)}</span></div>
+          <div class="rcard-name">${JOTPAD_ICON}<span>${esc(f.name)}</span></div>
           ${items}
           ${f.more ? `<div class="rcard-more">and ${f.more} more</div>` : ""}
         </section>`;

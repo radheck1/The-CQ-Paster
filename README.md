@@ -92,17 +92,17 @@ A notepad in the same window. Flip the switch in the top right from **Paster** t
   A line's sub-lines move with it.
 - **Click a dot** to cross out that line *and everything tucked under it*. Click
   it again to bring them back.
-- **Folders** are Jotter's own, one note each. **Main Jots** is permanent.
-- **Clear all** empties the current note, with the same 10-second **Undo** as
-  Paster. ⌘Z and ⇧⌘Z step through individual edits.
+- **Jotpads** are Jotter's own, one note each. **Main Jots** is permanent.
+- **Clear Jots** removes the lines you've crossed out and keeps the rest, with
+  the same 10-second **Undo** as Paster. ⌘Z and ⇧⌘Z step through individual edits.
 - Plain text only. Notes save as you type, to `jotter.json` beside the slots.
 - The control panel reopens on whichever side you left it.
-- **Reminders**, per folder. The clock beside the folder pill turns them on and
+- **Reminders**, per jotpad. The clock beside the jotpad menu turns them on and
   sets how often (15 minutes to 2 hours, or custom), when (working hours, or your
   own hours and days) and the sound. A reminder is a card in the top-right corner
   listing what's still open, with **Open Jotter**, **Snooze 10 min** and
   **Dismiss**, and the menu-bar icon gets an orange dot until you deal with it.
-  A folder with nothing open stays quiet, and a reminder the Mac slept through is
+  A jotpad with nothing open stays quiet, and a reminder the Mac slept through is
   skipped rather than shown late.
 
 Your slot hotkeys work inside a note, so ⌘+N+V pastes a slot straight in.

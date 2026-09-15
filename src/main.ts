@@ -61,6 +61,12 @@ const UNDO_ICON = svg(`<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0
 const FOLDER_ICON = svg(
   `<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>`,
 );
+/** Jotter's jotpads: a notepad with two rings and two lines of writing. */
+const JOTPAD_ICON = svg(`<rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 2v4M15 2v4M9 11h6M9 15h4"/>`);
+/** The footer's reminder that closing the control panel doesn't quit. */
+const BACKGROUND_TIP = IS_MAC
+  ? "You can close this window.<br />cQ runs in the background."
+  : "You can close this window,<br />CQ Paster runs in the background";
 const CHECK_ICON = svg(`<polyline points="20 6 9 17 4 12"/>`, 12);
 const PENCIL_ICON = svg(
   `<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/>`,
@@ -192,6 +198,10 @@ type FolderSource = {
   activeId: number;
   activeName: string;
   pillTitle: string;
+  /** What one is called in the menu: "folder", or "jotpad" in Jotter. */
+  noun: string;
+  /** The pill's icon. */
+  icon: string;
   create(name: string): void;
   rename(id: number, name: string): void;
   select(id: number): void;
@@ -206,6 +216,8 @@ function pasterFolders(state: StateDto): FolderSource {
     activeId: state.activeFolder,
     activeName: state.folderName,
     pillTitle: "Folder — each has its own 9 slots",
+    noun: "folder",
+    icon: FOLDER_ICON,
     create: (name) => invoke("create_folder", { name }),
     rename: (id, name) => invoke("rename_folder", { id, name }),
     select: (id) => invoke("select_folder", { id }),
@@ -220,13 +232,15 @@ function pasterFolders(state: StateDto): FolderSource {
   };
 }
 
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
 function folderControl(source: FolderSource): string {
   const rows = source.folders
     .map((f) => {
       if (editing?.kind === "rename" && editing.id === f.id) {
         return `<li class="folder-row editing">
           <input class="fr-input" id="fr-input" type="text" maxlength="${MAX_NAME}"
-                 value="${escapeHtml(f.name)}" aria-label="Rename folder" />
+                 value="${escapeHtml(f.name)}" aria-label="Rename ${source.noun}" />
         </li>`;
       }
       if (confirmDelete === f.id) {
@@ -245,12 +259,12 @@ function folderControl(source: FolderSource): string {
         ? ""
         : `<span class="fr-actions">
              <button class="fr-btn" data-rename="${f.id}" title="Rename">${PENCIL_ICON}</button>
-             <button class="fr-btn fr-del" data-del="${f.id}" title="Delete folder">${X_ICON}</button>
+             <button class="fr-btn fr-del" data-del="${f.id}" title="Delete ${source.noun}">${X_ICON}</button>
            </span>`;
       return `<li class="folder-row ${cls}" data-select="${f.id}"
                   title="${
                     f.permanent
-                      ? "Home folder — always here"
+                      ? `Home ${source.noun} — always here`
                       : `Switch to ${escapeHtml(f.name)}`
                   }">
         <span class="fr-check">${f.active ? CHECK_ICON : ""}</span>
@@ -267,16 +281,16 @@ function folderControl(source: FolderSource): string {
     editing?.kind === "create"
       ? `<div class="folder-new editing">
            <input class="fr-input" id="fr-input" type="text" maxlength="${MAX_NAME}"
-                  placeholder="Folder name" aria-label="New folder name" />
+                  placeholder="${capital(source.noun)} name" aria-label="New ${source.noun} name" />
          </div>`
-      : `<button class="folder-new" id="folder-new">${PLUS_ICON} Create new folder</button>`;
+      : `<button class="folder-new" id="folder-new">${PLUS_ICON} Create new ${source.noun}</button>`;
 
   return `
     <div class="folder-wrap">
       <button class="folder-pill" id="folder-btn" aria-haspopup="true" aria-expanded="${menuOpen}"
               title="${source.pillTitle}">
         <span class="fp-name">${escapeHtml(source.activeName)}</span>
-        ${FOLDER_ICON}
+        ${source.icon}
       </button>
       <div class="folder-menu"${menuOpen ? "" : " hidden"}>
         <ul class="folder-list">${rows}</ul>
@@ -607,7 +621,7 @@ function renderMain(state: StateDto) {
             : ""
         }
         <span class="spacer"></span>
-        <span class="tip">You can close this window,<br />CQ Paster runs in the background</span>
+        <span class="tip">${BACKGROUND_TIP}</span>
       </footer>
     </div>`;
 
@@ -688,10 +702,11 @@ const JOTTER_HELP = `
               <b>Click a dot</b> to cross out that line and everything tucked under it. Click
               it again to bring them back.
               <br /><br />
-              <b>Folders</b> each hold their own note — Clear all and Undo apply only to the
-              folder you're in.
+              <b>Jotpads</b> each hold their own note. <b>Clear Jots</b> removes the lines
+              you've crossed out, and Undo puts them back; both apply only to the jotpad
+              you're in.
               <br /><br />
-              <b>The clock</b> beside the folder sets reminders for that folder: how often,
+              <b>The clock</b> beside the jotpad sets reminders for that jotpad: how often,
               when, and which sound.
               <br /><br />
               Notes save as you type. Slot hotkeys still work here:
@@ -702,7 +717,9 @@ function jotterFolders(): FolderSource {
     folders: jotter.folderList(),
     activeId: jotter.activeId(),
     activeName: jotter.activeName(),
-    pillTitle: "Folder — each has its own note",
+    pillTitle: "Jotpad — each has its own note",
+    noun: "jotpad",
+    icon: JOTPAD_ICON,
     create: (name) => {
       jotter.createFolder(name);
       jotter.focus();
@@ -762,21 +779,21 @@ let jotterFootKey = "";
 function refreshJotterFoot(force = false) {
   const foot = app.querySelector(".panel.jotter .panel-foot");
   if (!foot) return;
-  const key = `${jotter.activeId()}|${jotter.isEmpty()}|${jotter.undoOffered()}`;
+  const key = `${jotter.activeId()}|${jotter.canClear()}|${jotter.undoOffered()}`;
   if (!force && key === jotterFootKey) return;
   jotterFootKey = key;
   foot.innerHTML = `
-    <button class="ghost" id="clear-all"${jotter.isEmpty() ? " disabled" : ""}
-      title="Clear the note in “${escapeHtml(jotter.activeName())}” — other folders are untouched">Clear all</button>
+    <button class="ghost" id="clear-all"${jotter.canClear() ? "" : " disabled"}
+      title="Remove the crossed-out lines in “${escapeHtml(jotter.activeName())}” — other jotpads are untouched">Clear Jots</button>
     ${
       jotter.undoOffered()
-        ? `<button class="ghost undo" id="undo-clear" title="Restore the cleared note">${UNDO_ICON} Undo</button>`
+        ? `<button class="ghost undo" id="undo-clear" title="Put the cleared jots back">${UNDO_ICON} Undo</button>`
         : ""
     }
     <span class="spacer"></span>
-    <span class="tip">You can close this window,<br />CQ Paster runs in the background</span>`;
+    <span class="tip">${BACKGROUND_TIP}</span>`;
   foot.querySelector("#clear-all")?.addEventListener("click", () => {
-    jotter.clearNote();
+    jotter.clearCrossed();
     jotter.focus();
   });
   foot.querySelector("#undo-clear")?.addEventListener("click", () => {

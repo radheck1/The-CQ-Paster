@@ -283,3 +283,99 @@ export function serialize(lines: Line[], a: Pos, b: Pos): string {
     })
     .join("\n");
 }
+
+/** Whether anything in the note is crossed out: what Clear Jots would remove. */
+export const hasCrossed = (lines: Line[]) => crossings(lines).crossed.some(Boolean);
+
+/**
+ * Clear Jots: the note without its crossed-out lines. A crossed-out group goes
+ * as a whole, since everything under a crossed-out line reads as crossed out.
+ */
+export function removeCrossed(lines: Line[]): Line[] {
+  const { crossed } = crossings(lines);
+  const kept = lines.filter((_, i) => !crossed[i]);
+  return kept.length ? normalize(kept) : [blankLine()];
+}
+
+/**
+ * Undo for Clear Jots: put the lines it removed from `before` back into the
+ * note as it is `now`.
+ *
+ * Each run of removed lines goes back straight after the line it followed. The
+ * note may have been edited since, so the lines that stayed are found again in
+ * `now` by their text and indent; a run whose line has since been changed or
+ * deleted follows the nearest earlier line that is still there. Everything in
+ * `now` is kept, so Undo never costs text.
+ */
+export function restoreCrossed(before: Line[], now: Line[]): Line[] {
+  const { crossed } = crossings(before);
+  const kept: Line[] = [];
+  // runs[0] is what came before the first kept line; runs[k + 1] follows kept[k].
+  const runs: Line[][] = [[]];
+  before.forEach((l, i) => {
+    if (crossed[i]) {
+      runs[runs.length - 1].push(l);
+    } else {
+      kept.push(l);
+      runs.push([]);
+    }
+  });
+  // Everything crossed out leaves a blank note, which isn't text to keep.
+  const current = kept.length === 0 && isPristine(now) ? [] : now;
+  const found = matchLines(kept, current);
+  // What goes back after each line of `current`; -1 is the top of the note.
+  const after = new Map<number, Line[]>([[-1, [...runs[0]]]]);
+  let home = -1;
+  kept.forEach((_, k) => {
+    if (found[k] >= 0) home = found[k];
+    after.set(home, [...(after.get(home) ?? []), ...runs[k + 1]]);
+  });
+  const out = [...after.get(-1)!];
+  current.forEach((l, i) => out.push(l, ...(after.get(i) ?? [])));
+  return normalize(out);
+}
+
+/**
+ * Pair lines of `a` with lines of `b` that have the same text and indent,
+ * keeping their order (a longest common subsequence). `found[i]` is the index
+ * of `a[i]` in `b`, or -1. An unchanged top and bottom are paired directly, so
+ * only the edited middle needs the table.
+ */
+function matchLines(a: Line[], b: Line[]): number[] {
+  const ka = a.map((l) => `${l.depth}:${l.text}`);
+  const kb = b.map((l) => `${l.depth}:${l.text}`);
+  const found = ka.map(() => -1);
+  let s = 0;
+  while (s < ka.length && s < kb.length && ka[s] === kb[s]) {
+    found[s] = s;
+    s++;
+  }
+  let ea = ka.length;
+  let eb = kb.length;
+  while (ea > s && eb > s && ka[ea - 1] === kb[eb - 1]) {
+    ea--;
+    eb--;
+    found[ea] = eb;
+  }
+  const n = ea - s;
+  const m = eb - s;
+  // lcs[i][j]: how many lines ka[s + i ..] and kb[s + j ..] have in common.
+  const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = ka[s + i] === kb[s + j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  for (let i = 0, j = 0; i < n && j < m; ) {
+    if (ka[s + i] === kb[s + j]) {
+      found[s + i] = s + j;
+      i++;
+      j++;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  return found;
+}

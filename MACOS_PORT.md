@@ -577,6 +577,17 @@ geometry constants in `jotter.ts` must match `.j-line` in `styles.css`.
 so ⌘Z is handled in `keydown`, with `historyUndo` as a fallback. Keystrokes on
 one line with no pause over 1.5 s undo as one step.
 
+**Jotpads.** On screen, Jotter's folders are *jotpads*, with a notepad icon; the
+code and `jotter.json` still say `folders`. The folder menu is shared with Paster
+and takes its noun and icon from its `FolderSource`, so Paster's HTML doesn't
+change. On macOS the footer of both views reads "You can close this window. cQ
+runs in the background."; Windows keeps its wording.
+
+**Clear Jots** removes only the crossed-out lines (`removeCrossed`). Its Undo,
+`restoreCrossed`, puts each removed run back after the line it followed. Those
+lines are found again in the note as it is now by text and indent (a longest
+common subsequence), so anything typed or edited during the 10 seconds is kept.
+
 **Crossing out is inherited.** A line reads as crossed out if it or any line it
 sits under is marked done. A sub-line of a crossed group can't be toggled on its
 own, and bringing the parent back restores each sub-line's own state.
@@ -653,6 +664,13 @@ back to the app the user was in. Not yet confirmed in the installed app.
 
 **Same limitation as the popup:** the card doesn't draw over another app's
 full-screen Space.
+
+**Open: Dismiss bringing up the control panel.** Reported with the panel closed.
+Nothing in the app shows the main window on Dismiss or Snooze, and Tauri ignores
+macOS's reopen event, so the cause isn't in the code as read. `log_windows` writes
+the panel's state (visible, key, on this Space, minimised), whether CQ is active
+and the frontmost app to `diagnostics.log` when the card is shown, when Dismiss or
+Snooze is pressed, and a second later. Remove it once the cause is known.
 
 ---
 
@@ -803,8 +821,9 @@ Verified on macOS unless noted. Windows passes all of these.
       typing across lines — native WebKit input
 - [x] Crossing out a line crosses out its group; sub-lines of a crossed group are inert
 - [x] ⌘Z / ⇧⌘Z step through edits one at a time
-- [x] Clear all + Undo, keeping anything typed after the clear
-- [x] Folders: create, switch (caret restored), delete; counts show open lines
+- [x] Clear Jots removes only crossed-out lines; Undo puts them back in place,
+      keeping anything typed after the clear
+- [x] Jotpads: create, switch (caret restored), delete; counts show open lines
 - [x] Notes, folders, last side and height survive a relaunch
 - [x] A Paster update mid-typing leaves the note and the caret alone
 - [ ] In the installed app: ⌘A, ⌘+N+V into a note, press-and-hold accents and IME
@@ -820,9 +839,11 @@ Verified on macOS unless noted. Windows passes all of these.
       2x laptop with two 1x displays, one of them portrait
 - [ ] In the installed app: sound, menu-bar dot, focus after Dismiss or Snooze,
       and a real scheduled reminder firing
+- [ ] Dismiss and Snooze leave a closed control panel closed — reported broken;
+      logging in place (§7.5)
 
 **Regression**
-- [x] `cargo test` passes — 43 tests on macOS, plus 4 `#[ignore]`d
+- [x] `cargo test` passes — 44 tests on macOS, plus 4 `#[ignore]`d
       live tests run with `cargo test -- --ignored`
 - [x] The **Windows** build still compiles — checked by CI
       (`.github/workflows/ci.yml`), which builds and tests both platforms on

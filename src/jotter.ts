@@ -23,12 +23,15 @@ import {
   crossings,
   deleteAtEnd,
   deleteRange,
+  hasCrossed,
   insertText,
   isPristine,
   normalize,
   openCount,
   ordered,
+  removeCrossed,
   repairLines,
+  restoreCrossed,
   serialize,
   shiftDepth,
   splitLine,
@@ -210,7 +213,8 @@ export const view = () => doc.view;
 export const savedHeight = () => doc.height;
 export const activeId = () => folder().id;
 export const activeName = () => folder().name;
-export const isEmpty = () => isPristine(folder().lines);
+/** Whether Clear Jots has anything to remove in the open note. */
+export const canClear = () => hasCrossed(folder().lines);
 export const reminder = () => folder().reminder;
 
 /** Change the open folder's reminder settings. */
@@ -317,34 +321,35 @@ export function flush(): Promise<unknown> {
   return saving;
 }
 
-// ---- Clear all ----
+// ---- Clear Jots ----
 
-let cleared: { folderId: number; lines: Line[] } | null = null;
+let cleared: { folderId: number; before: Line[] } | null = null;
 let clearedUntil = 0;
 let clearTimer: number | undefined;
 
 export const undoOffered = () => cleared !== null && Date.now() < clearedUntil;
 
-export function clearNote() {
+/** Clear Jots: remove the crossed-out lines from the open note. */
+export function clearCrossed() {
   const f = folder();
-  if (isPristine(f.lines)) return;
+  if (!hasCrossed(f.lines)) return;
   checkpoint(readSel());
   typing = null;
-  cleared = { folderId: f.id, lines: f.lines };
+  cleared = { folderId: f.id, before: f.lines };
   clearedUntil = Date.now() + UNDO_MS;
   window.clearTimeout(clearTimer);
   clearTimer = window.setTimeout(() => {
     cleared = null;
     onChangeFn();
   }, UNDO_MS);
-  f.lines = [blankLine()];
+  f.lines = removeCrossed(f.lines);
   showActive();
   changed();
 }
 
 /**
- * Put a cleared note back, in the folder it came from. Anything written there
- * since the clear is kept, below the restored note, so Undo never costs text.
+ * Put the cleared lines back where they were, in the folder they came from.
+ * Anything written there since the clear is kept, so Undo never costs text.
  */
 export function undoClear() {
   const c = cleared;
@@ -357,7 +362,7 @@ export function undoClear() {
       checkpoint(readSel());
       typing = null;
     }
-    f.lines = isPristine(f.lines) ? c.lines : normalize([...c.lines, ...f.lines]);
+    f.lines = restoreCrossed(c.before, f.lines);
     if (f.id === doc.active) showActive();
   }
   changed();
