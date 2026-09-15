@@ -17,13 +17,14 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use chrono::{Datelike, Local, NaiveDateTime, TimeZone, Timelike};
+use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSBox, NSBoxType, NSColor, NSEvent, NSScreen, NSSound, NSTitlePosition, NSWindow,
     NSWorkspace,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -388,28 +389,92 @@ fn hide(app: &AppHandle) {
     set_badge(app, false);
 }
 
-/// Clicking the card made CQ the active app. With no window of ours left on
-/// screen, hand focus back to whatever the user was working in.
-fn return_focus(app: &AppHandle) {
-    let main_visible = app
-        .get_webview_window("main")
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false);
-    if main_visible {
-        return;
-    }
-    let _ = app.run_on_main_thread(|| {
+/// Dismiss and Snooze: put the card away without bringing CQ forward.
+///
+/// Clicking the card made CQ the active app, and when an active app's key
+/// window goes, macOS makes its next window key and brings it to the front: the
+/// control panel, if it's open behind other windows. So unless the panel was
+/// already in front, CQ hands activation back first and the card goes a moment
+/// later.
+fn put_away(app: &AppHandle) {
+    state().showing.clear();
+    set_badge(app, false);
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let stay = panel_in_front(&handle);
+        crate::diag(&format!("reminder: putting the card away, control panel in front={stay}"));
+        if stay {
+            hide_card(&handle);
+            return;
+        }
         // Safe: `run_on_main_thread` guarantees exactly that.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         NSApplication::sharedApplication(mtm).deactivate();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let h = handle.clone();
+            let _ = handle.run_on_main_thread(move || hide_card(&h));
+        });
     });
+}
+
+fn hide_card(app: &AppHandle) {
+    if let Some(card) = app.get_webview_window(CARD_LABEL) {
+        let _ = card.hide();
+    }
+}
+
+/// Whether the control panel is the frontmost ordinary window on screen, of any
+/// app. Checked before the card goes, so it still says what was in front when
+/// the card was clicked.
+fn panel_in_front(app: &AppHandle) -> bool {
+    let Some(ptr) = app.get_webview_window("main").and_then(|w| w.ns_window().ok()) else {
+        return false;
+    };
+    if ptr.is_null() {
+        return false;
+    }
+    let panel: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+    panel.isVisible() && front_window_number() == Some(panel.windowNumber())
+}
+
+/// The window number of the frontmost ordinary window on screen, whichever app
+/// it belongs to. Floating windows, like the card and the menu bar, don't count.
+fn front_window_number() -> Option<isize> {
+    // From CGWindow.h.
+    const ON_SCREEN_ONLY: u32 = 1 << 0;
+    const EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *mut std::ffi::c_void;
+    }
+    // A +1 CFArray of CFDictionaries, front to back. Both are toll-free bridged,
+    // so they are read as their Foundation counterparts.
+    let list: Retained<NSArray> = unsafe {
+        Retained::from_raw(CGWindowListCopyWindowInfo(ON_SCREEN_ONLY | EXCLUDE_DESKTOP_ELEMENTS, 0).cast())
+    }?;
+    let number = |dict: &NSDictionary, key: &str| -> Option<Retained<NSNumber>> {
+        let value = dict.objectForKey(&NSString::from_str(key))?;
+        // Safe: the window list stores these values as CFNumbers.
+        Some(unsafe { Retained::cast_unchecked(value) })
+    };
+    (0..list.count()).find_map(|i| {
+        let item = list.objectAtIndex(i);
+        // Safe: every entry is a dictionary.
+        let dict: &NSDictionary = unsafe { &*Retained::as_ptr(&item).cast::<NSDictionary>() };
+        let layer = number(dict, "kCGWindowLayer")?.integerValue();
+        let alpha = number(dict, "kCGWindowAlpha").map_or(1.0, |a| a.doubleValue());
+        if layer != 0 || alpha <= 0.0 {
+            return None;
+        }
+        number(dict, "kCGWindowNumber").map(|n| n.integerValue())
+    })
 }
 
 /// Log where the control panel and focus are at a moment in a card's life.
 ///
-/// There to explain a report that Dismiss brought up the control panel when it
-/// was closed: nothing in the app shows it on Dismiss, so the log records
-/// whether it was really closed and what was frontmost.
+/// Kept for a round of testing on a real Mac, to confirm that Dismiss and Snooze
+/// no longer bring the control panel forward (see `put_away`).
 fn log_windows(app: &AppHandle, moment: &'static str) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -576,9 +641,9 @@ pub fn reminder_present(app: AppHandle, height: f64) {
         let Some(card) = handle.get_webview_window(CARD_LABEL) else { return };
         // Placed before it's shown, so it never flashes up where it was last.
         place_card(&card, height);
-        let _ = card.show();
         crate::make_popup_float(&card);
-        // Ordered in without activating, like the cursor popup.
+        // Ordered in directly, not with `show`: that would also make it the key
+        // window and take the keyboard from the control panel mid-typing.
         crate::order_popup_front(&card);
         log_windows(&handle, "card shown");
     });
@@ -587,8 +652,7 @@ pub fn reminder_present(app: AppHandle, height: f64) {
 #[tauri::command]
 pub fn reminder_dismiss(app: AppHandle) {
     log_press(&app, "Dismiss pressed", "1s after Dismiss");
-    hide(&app);
-    return_focus(&app);
+    put_away(&app);
 }
 
 #[tauri::command]
@@ -602,8 +666,7 @@ pub fn reminder_snooze(app: AppHandle) {
             snoozed.insert(*id, until);
         }
     }
-    hide(&app);
-    return_focus(&app);
+    put_away(&app);
 }
 
 /// "Open Jotter": the control panel, on that folder's note.

@@ -665,12 +665,16 @@ back to the app the user was in. Not yet confirmed in the installed app.
 **Same limitation as the popup:** the card doesn't draw over another app's
 full-screen Space.
 
-**Open: Dismiss bringing up the control panel.** Reported with the panel closed.
-Nothing in the app shows the main window on Dismiss or Snooze, and Tauri ignores
-macOS's reopen event, so the cause isn't in the code as read. `log_windows` writes
-the panel's state (visible, key, on this Space, minimised), whether CQ is active
-and the frontmost app to `diagnostics.log` when the card is shown, when Dismiss or
-Snooze is pressed, and a second later. Remove it once the cause is known.
+**Dismiss and Snooze don't bring the control panel forward.** Clicking the card
+makes CQ the active app, and when an active app's key window goes, macOS makes its
+next window key and brings it to the front: the control panel, if it's open behind
+other windows. `put_away` checks the on-screen window list (`CGWindowListCopyWindowInfo`)
+first. If the panel is the frontmost ordinary window, the user was in it and stays
+there. Otherwise CQ deactivates, and the card is hidden 150 ms later. The card
+is also ordered in directly rather than with `show()`, which would make it the key
+window and take the keyboard from the panel mid-typing. Found with `log_windows`,
+which records the panel's state and the frontmost app when a card is shown, when
+Dismiss or Snooze is pressed, and a second later; remove it once this is confirmed.
 
 ---
 
@@ -839,8 +843,8 @@ Verified on macOS unless noted. Windows passes all of these.
       2x laptop with two 1x displays, one of them portrait
 - [ ] In the installed app: sound, menu-bar dot, focus after Dismiss or Snooze,
       and a real scheduled reminder firing
-- [ ] Dismiss and Snooze leave a closed control panel closed — reported broken;
-      logging in place (§7.5)
+- [ ] Dismiss and Snooze leave the control panel where it was, and don't take the
+      keyboard from it when the card appears — fixed, to confirm (§7.5)
 
 **Regression**
 - [x] `cargo test` passes — 44 tests on macOS, plus 4 `#[ignore]`d

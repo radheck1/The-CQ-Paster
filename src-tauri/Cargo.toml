@@ -61,6 +61,9 @@ objc2-foundation = { version = "0.3", features = [
   "NSData",
   "NSURL",
   "NSGeometry",
+  # Reminder card: reading the on-screen window list.
+  "NSDictionary",
+  "NSValue",
 ] }
 # Local time for the reminder schedule. Already built for Tauri, with this
 # feature set, so it adds nothing to the build.
