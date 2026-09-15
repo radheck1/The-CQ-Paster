@@ -51,6 +51,9 @@ objc2-app-kit = { version = "0.3", features = [
   "NSBox",
   "NSStatusItem",
   "NSStatusBarButton",
+  # ...and placing the reminder card on the screen under the pointer.
+  "NSScreen",
+  "NSEvent",
 ] }
 objc2-foundation = { version = "0.3", features = [
   "NSArray",

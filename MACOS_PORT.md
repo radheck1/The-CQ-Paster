@@ -628,9 +628,19 @@ reuses the popup's float and order-front helpers, plus `accept_first_mouse`, so 
 click presses the button instead of only activating the window. The backend
 emits the card; the window draws it, measures it without waiting for a frame (a
 hidden window may never get one), and calls `reminder_present` with its height,
-which places it top-right of the work area of the screen under the pointer. It
-needs its own capability, or it can't receive events at all. Crossing lines out
+which places it top-right of the screen under the pointer. It needs its own
+capability, or it can't receive events at all. Crossing lines out
 while a card is up updates it, and crossing out the last one takes it down.
+
+**Place windows in AppKit points, not Tauri positions.** The card first used
+Tauri's `cursor_position`, `monitor_from_point`, `work_area` and `set_position`.
+With a 2x laptop and 1x external displays those disagree: the pointer is scaled
+by the primary screen's factor, each monitor's area by its own, and a window
+move by the factor of whichever screen the window was last on. The pointer
+matched no monitor, the code fell back to the laptop, and the card landed
+mid-screen on an external display. `place_card` now reads `NSEvent.mouseLocation`
+and `NSScreen` frames and sets the `NSWindow` frame directly — one coordinate
+space for every screen. A unit test holds that three-screen layout.
 
 **The menu-bar dot** can't be part of the icon, because template images are drawn
 in a single colour. It's an `NSBox` laid over the status item's button, reached
@@ -806,8 +816,10 @@ Verified on macOS unless noted. Windows passes all of these.
       sound with preview, independent per folder — WKWebView harness
 - [x] Card: open lines per folder, the rest counted, names escaped, sizes itself,
       buttons reach the backend — WKWebView harness
-- [ ] In the installed app: card position, sound, menu-bar dot, focus after
-      Dismiss or Snooze, and a real scheduled reminder firing
+- [x] The card lands top-right of the screen under the pointer — checked on a
+      2x laptop with two 1x displays, one of them portrait
+- [ ] In the installed app: sound, menu-bar dot, focus after Dismiss or Snooze,
+      and a real scheduled reminder firing
 
 **Regression**
 - [x] `cargo test` passes — 43 tests on macOS, plus 4 `#[ignore]`d

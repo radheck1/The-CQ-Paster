@@ -19,7 +19,9 @@ use std::time::Duration;
 use chrono::{Datelike, Local, NaiveDateTime, TimeZone, Timelike};
 use objc2::runtime::NSObjectProtocol;
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSApplication, NSBox, NSBoxType, NSColor, NSSound, NSTitlePosition};
+use objc2_app_kit::{
+    NSApplication, NSBox, NSBoxType, NSColor, NSEvent, NSScreen, NSSound, NSTitlePosition, NSWindow,
+};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -460,20 +462,59 @@ fn set_badge(app: &AppHandle, on: bool) {
     });
 }
 
-/// Top-right of the usable area of the screen the pointer is on, in physical
-/// pixels — the same space the monitor's own geometry is reported in.
-fn corner(app: &AppHandle) -> Option<(i32, i32)> {
-    let pointer = app.cursor_position().ok()?;
-    let screen = app
-        .monitor_from_point(pointer.x, pointer.y)
-        .ok()
-        .flatten()
-        .or_else(|| app.primary_monitor().ok().flatten())?;
-    let scale = screen.scale_factor();
-    let area = screen.work_area();
-    let x = area.position.x + area.size.width as i32 - ((CARD_WIDTH + CARD_MARGIN) * scale).round() as i32;
-    let y = area.position.y + (CARD_MARGIN * scale).round() as i32;
-    Some((x, y))
+/// Which of `frames` holds `pointer`, edges included. Where two screens touch,
+/// the first match wins.
+fn screen_at(frames: &[NSRect], pointer: NSPoint) -> Option<usize> {
+    frames.iter().position(|f| {
+        pointer.x >= f.origin.x
+            && pointer.x <= f.origin.x + f.size.width
+            && pointer.y >= f.origin.y
+            && pointer.y <= f.origin.y + f.size.height
+    })
+}
+
+/// The card's bottom-left corner for a screen's visible area: top right, clear
+/// of the edges.
+fn card_origin(area: NSRect, height: f64) -> NSPoint {
+    NSPoint::new(
+        area.origin.x + area.size.width - CARD_WIDTH - CARD_MARGIN,
+        area.origin.y + area.size.height - height - CARD_MARGIN,
+    )
+}
+
+/// Put the card top-right of the screen the pointer is on. Main thread only.
+///
+/// This works in AppKit's own global coordinates — points, measured from the
+/// bottom-left of the primary screen — not through Tauri's positions. Those are
+/// physical pixels, and with Retina and non-Retina screens side by side they
+/// don't agree with one another: the pointer is scaled by the primary screen's
+/// factor, each monitor's area by its own, and a window move by the factor of
+/// whichever screen the window was last on. With a 2x laptop and 1x externals
+/// the pointer matched no monitor, the fallback was the laptop, and the laptop's
+/// corner landed mid-screen on an external display.
+fn place_card(card: &tauri::WebviewWindow, height: f64) {
+    let Ok(ptr) = card.ns_window() else { return };
+    if ptr.is_null() {
+        return;
+    }
+    // Safe: only called from `run_on_main_thread`.
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+    let screens = NSScreen::screens(mtm);
+    let frames: Vec<NSRect> = screens.iter().map(|s| s.frame()).collect();
+    let Some(screen) = screen_at(&frames, NSEvent::mouseLocation())
+        .map(|i| screens.objectAtIndex(i))
+        .or_else(|| NSScreen::mainScreen(mtm))
+    else {
+        return;
+    };
+    let area = screen.visibleFrame();
+    let origin = card_origin(area, height);
+    ns.setFrame_display(NSRect::new(origin, NSSize::new(CARD_WIDTH, height)), true);
+    crate::diag(&format!(
+        "reminder: card at {:.0},{:.0} on the screen at {:.0},{:.0} ({:.0}x{:.0})",
+        origin.x, origin.y, area.origin.x, area.origin.y, area.size.width, area.size.height
+    ));
 }
 
 // ---- Commands ----------------------------------------------------------------------
@@ -481,19 +522,16 @@ fn corner(app: &AppHandle) -> Option<(i32, i32)> {
 /// The card's window has drawn a card: size it, place it, show it.
 #[tauri::command]
 pub fn reminder_present(app: AppHandle, height: f64) {
-    let Some(card) = app.get_webview_window(CARD_LABEL) else { return };
-    let _ = card.set_size(tauri::LogicalSize::new(CARD_WIDTH, height.clamp(80.0, 640.0)));
-    if let Some((x, y)) = corner(&app) {
-        let _ = card.set_position(tauri::PhysicalPosition::new(x, y));
-    }
-    let _ = card.show();
+    let height = height.clamp(80.0, 640.0);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Some(card) = handle.get_webview_window(CARD_LABEL) {
-            crate::make_popup_float(&card);
-            // Ordered in without activating, like the cursor popup.
-            crate::order_popup_front(&card);
-        }
+        let Some(card) = handle.get_webview_window(CARD_LABEL) else { return };
+        // Placed before it's shown, so it never flashes up where it was last.
+        place_card(&card, height);
+        let _ = card.show();
+        crate::make_popup_float(&card);
+        // Ordered in without activating, like the cursor popup.
+        crate::order_popup_front(&card);
     });
 }
 
@@ -580,6 +618,26 @@ mod tests {
             doc: Doc { folders: vec![Folder { id: 1, name: "Main Jots".into(), lines, reminder }] },
             ..State::default()
         }
+    }
+
+    fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
+        NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
+    }
+
+    #[test]
+    fn the_card_goes_top_right_of_the_screen_under_the_pointer() {
+        // A 2x laptop with two 1x displays, as NSScreen reported them on the
+        // setup where the card used to land mid-screen on the wrong display.
+        let laptop = rect(0.0, 0.0, 1512.0, 982.0);
+        let wide = rect(1512.0, 418.0, 2560.0, 1440.0);
+        let portrait = rect(4072.0, 178.0, 1080.0, 1920.0);
+        let frames = [laptop, wide, portrait];
+        assert_eq!(screen_at(&frames, NSPoint::new(2784.7, 478.2)), Some(1));
+        assert_eq!(screen_at(&frames, NSPoint::new(4500.0, 2000.0)), Some(2));
+        assert_eq!(screen_at(&frames, NSPoint::new(700.0, 982.0)), Some(0), "the top edge counts");
+        assert_eq!(screen_at(&frames, NSPoint::new(-5.0, 10.0)), None);
+        let origin = card_origin(wide, 200.0);
+        assert_eq!((origin.x, origin.y), (4072.0 - 320.0 - 12.0, 1858.0 - 200.0 - 12.0));
     }
 
     #[test]
