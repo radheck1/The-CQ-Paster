@@ -13,6 +13,8 @@ mod hook;
 mod jotter;
 #[cfg(target_os = "macos")]
 mod reminders;
+#[cfg(target_os = "macos")]
+mod shotter;
 mod permissions;
 mod slots;
 
@@ -688,7 +690,7 @@ pub(crate) fn make_popup_float(win: &tauri::WebviewWindow) -> Option<(isize, usi
 ///
 /// Must run on the main thread; `setup` already does.
 #[cfg(target_os = "macos")]
-fn make_native_titlebar(app: &AppHandle) {
+pub(crate) fn make_native_titlebar(app: &AppHandle, label: &'static str) {
     use objc2_app_kit::{
         NSColor, NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
     };
@@ -704,7 +706,7 @@ fn make_native_titlebar(app: &AppHandle) {
     // window is fully on screen.
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
-        let Some(win) = handle.get_webview_window("main") else {
+        let Some(win) = handle.get_webview_window(label) else {
             return;
         };
         let Ok(ptr) = win.ns_window() else { return };
@@ -847,6 +849,28 @@ pub fn run() {
             reminders::reminder_preview_sound,
             #[cfg(target_os = "macos")]
             reminders::reminder_next,
+            #[cfg(target_os = "macos")]
+            shotter::shots_list,
+            #[cfg(target_os = "macos")]
+            shotter::shot_thumbnail,
+            #[cfg(target_os = "macos")]
+            shotter::shot_copy,
+            #[cfg(target_os = "macos")]
+            shotter::shot_trash,
+            #[cfg(target_os = "macos")]
+            shotter::shots_trash_all,
+            #[cfg(target_os = "macos")]
+            shotter::shot_untrash,
+            #[cfg(target_os = "macos")]
+            shotter::shot_markup,
+            #[cfg(target_os = "macos")]
+            shotter::markup_current,
+            #[cfg(target_os = "macos")]
+            shotter::shot_image,
+            #[cfg(target_os = "macos")]
+            shotter::shot_save,
+            #[cfg(target_os = "macos")]
+            shotter::markup_close,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -872,6 +896,10 @@ pub fn run() {
             // Jotter's reminder card and its schedule.
             #[cfg(target_os = "macos")]
             reminders::start(app.handle());
+
+            // Shotter's watch on the screenshot folder.
+            #[cfg(target_os = "macos")]
+            shotter::start(app.handle());
 
             // Main window: closing hides it instead of quitting the app.
             if let Some(main) = app.get_webview_window("main") {
@@ -902,7 +930,7 @@ pub fn run() {
             }
 
             #[cfg(target_os = "macos")]
-            make_native_titlebar(&handle);
+            make_native_titlebar(&handle, "main");
 
             build_tray(&handle, app_state.clone())?;
             hook::start(handle.clone(), app_state.clone());

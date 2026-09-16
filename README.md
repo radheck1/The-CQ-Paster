@@ -77,15 +77,15 @@ tray's **Folder** submenu.
 Toggle from the tray icon or the control panel. The app lives in the **system
 tray**; closing the control-panel window keeps it running.
 
-macOS has no modes: the popup always appears. The switch in that spot flips the
-control panel between Paster and **CQ Jotter** instead.
+macOS has no modes: the popup always appears. The control panel's title bar
+switches between Paster, **CQ Jotter** and **CQ Shotter** instead.
 
 ---
 
 ## CQ Jotter (macOS)
 
-A notepad in the same window. Flip the switch in the top right from **Paster** to
-**Jotter**; the window keeps its size and a note takes the place of the slots.
+A notepad in the same window. Pick **Jotter** in the title bar; the window keeps
+its size and a note takes the place of the slots.
 
 - **Every line has a dot.** Return starts a new line.
 - **Tab** tucks a line under the one above; **Shift+Tab** brings it back out.
@@ -106,6 +106,28 @@ A notepad in the same window. Flip the switch in the top right from **Paster** t
   skipped rather than shown late.
 
 Your slot hotkeys work inside a note, so ⌘+N+V pastes a slot straight in.
+
+## CQ Shotter (macOS)
+
+Your screenshots, in the same window. Pick **Shotter** in the title bar.
+
+- **Screenshots you take while cQ is running** show up here, newest first. It
+  watches the folder the Screenshot app saves to (the Desktop unless you've
+  changed it), and lists only files macOS itself marked as screenshots. The
+  first time, macOS asks whether cQ may access that folder.
+- A screenshot appears a few seconds after you take it: macOS writes the file
+  once its floating thumbnail goes away. Turn off **Show Floating Thumbnail** in
+  the Screenshot app's Options (⌘⇧5) to make it immediate.
+- **Click a screenshot** to copy it, then paste anywhere.
+- **The trash can** moves the file to the Trash, and **Clear Shots** moves every
+  screenshot in the list there, each with a 10-second **Undo**.
+- **The pencil** opens it in a markup window: a pen and an arrow, six colours,
+  three sizes, and Undo (⌘Z). **Done** saves over the original and copies it;
+  **Cancel** or Esc leaves the file alone.
+
+Screenshots copied only to the clipboard (⌃⌘⇧4), or taken while cQ is quit,
+don't appear. While cQ is running, ⌘⇧3/4/5 are taken by its hotkeys: take
+screenshots from the Screenshot app, the menu bar, or a mouse button.
 
 ---
 
@@ -140,11 +162,11 @@ same release as the Windows installer.
 | **First-run security prompt** | SmartScreen → *More info → Run anyway* | Gatekeeper → **right-click → Open**, or `xattr -dr com.apple.quarantine` |
 | **Extra permissions** | None | **Accessibility** and **Input Monitoring** must be granted in System Settings → Privacy & Security, or the hotkeys cannot work |
 | **Under the hood** | Win32 clipboard + low-level keyboard hook | `NSPasteboard` + `CGEventTap` |
-| **Modes** | Master and Noob | None — the popup always shows, and the switch opens **CQ Jotter** |
+| **Modes** | Master and Noob | None — the popup always shows, and the title bar switches to **CQ Jotter** and **CQ Shotter** |
 
 Everything else — folders, the 9 slots, plain-text paste, slot persistence,
 start-on-login — is shared code and behaves identically. The slot store and most
-of the frontend are platform-independent; Jotter is macOS-only for now.
+of the frontend are platform-independent; Jotter and Shotter are macOS-only for now.
 
 **The one thing macOS users must do that Windows users don't:** grant
 Accessibility **and** Input Monitoring. Both are required — with only the first,

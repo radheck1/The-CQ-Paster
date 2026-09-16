@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import * as jotter from "./jotter";
 import * as reminders from "./reminders";
+import * as shotter from "./shotter";
+import * as markup from "./markup";
 
 type Preview = {
   kind: "text" | "image" | "files" | "other";
@@ -87,8 +89,9 @@ let confirmDelete: number | null = null;
 let deferred: StateDto | null = null;
 
 /**
- * Which side of the Paster / Jotter switch is showing. macOS only: on Windows it
- * stays "paster", and every code path below behaves exactly as it did before.
+ * Which tool the control panel is showing: Paster, Jotter or Shotter. macOS
+ * only: on Windows it stays "paster", and every code path below behaves exactly
+ * as it did before.
  */
 let view: jotter.View = "paster";
 
@@ -504,13 +507,13 @@ function applyFullText(desc: HTMLElement, text: string) {
 // ---------------------------------------------------------------------------
 // Main view: the control panel.
 // ---------------------------------------------------------------------------
-function titlebar(name: string): string {
+function titlebar(name: string, active: jotter.View): string {
   return `
     <div class="titlebar" data-tauri-drag-region>
       <div class="titlebar-brand">
         <img class="titlebar-logo" src="/logo-white.png" alt="" />
-        <span>${name}</span>
-      </div>
+        ${IS_MAC ? "" : `<span>${name}</span>`}
+      </div>${IS_MAC ? viewSwitch(active) : ""}
       <div class="titlebar-controls">
         <button class="tb-btn" id="tb-min" title="Minimize" aria-label="Minimize">
           <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="6" width="9" height="1.1" fill="currentColor"/></svg>
@@ -529,11 +532,12 @@ function helpButton(body: string): string {
           </div>`;
 }
 
-/** macOS: the Paster / Jotter switch, in the place Windows has its mode toggle. */
+/** macOS: the switch between the three tools, in the middle of the title bar. */
 function viewSwitch(active: jotter.View): string {
-  return `<div class="mode-switch" role="group" aria-label="Paster or Jotter">
-            <button class="mode${active === "paster" ? " active" : ""}" data-view="paster">Paster</button>
-            <button class="mode${active === "jotter" ? " active" : ""}" data-view="jotter">Jotter</button>
+  const tab = (v: jotter.View, name: string) =>
+    `<button class="mode${active === v ? " active" : ""}" data-view="${v}">${name}</button>`;
+  return `<div class="mode-switch" role="group" aria-label="Tool">
+            ${tab("paster", "Paster")}${tab("jotter", "Jotter")}${tab("shotter", "Shotter")}
           </div>`;
 }
 
@@ -579,14 +583,14 @@ function renderMain(state: StateDto) {
     .join("");
 
   app.innerHTML = `
-    ${titlebar("Paster")}
+    ${titlebar("Paster", "paster")}
     <div class="panel" data-mode="${IS_MAC ? "noob" : state.mode}">
       <header class="panel-head">
         ${folderControl(pasterFolders(state))}
         <div class="head-right">
           ${
             IS_MAC
-              ? viewSwitch("paster")
+              ? ""
               : `<div class="mode-switch" role="group" aria-label="Mode">
             <button class="mode ${!isNoob ? "active" : ""}" data-mode="master">Master &gt;:)</button>
             <button class="mode ${isNoob ? "active" : ""}" data-mode="noob">Noob :)</button>
@@ -635,7 +639,7 @@ function renderMain(state: StateDto) {
   app.querySelector<HTMLButtonElement>("#tb-close")?.addEventListener("click", () => {
     win.hide(); // keep running in the tray
   });
-  // macOS has no modes; its toggle switches between Paster and Jotter.
+  // macOS has no modes; its switch, in the title bar, picks the tool.
   if (IS_MAC) {
     wireViewSwitch();
   } else {
@@ -736,7 +740,7 @@ function jotterFolders(): FolderSource {
 function renderJotter() {
   document.body.dataset.view = "jotter";
   app.innerHTML = `
-    ${titlebar("Jotter")}
+    ${titlebar("Jotter", "jotter")}
     <div class="panel jotter" data-mode="noob">
       <header class="panel-head">
         <div class="head-left">
@@ -744,7 +748,6 @@ function renderJotter() {
           ${reminders.control()}
         </div>
         <div class="head-right">
-          ${viewSwitch("jotter")}
           ${helpButton(JOTTER_HELP)}
         </div>
       </header>
@@ -802,6 +805,65 @@ function refreshJotterFoot(force = false) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Shotter view (macOS): screenshots taken while CQ is running.
+// ---------------------------------------------------------------------------
+const SHOTTER_HELP = `
+              <b>Screenshots</b> you take while cQ is running show up here, newest first,
+              a few seconds after you take them.<br />
+              <b>Click one</b> to copy it, then paste anywhere with ${MOD}+V.
+              <br /><br />
+              <b>The pencil</b> opens it for markup. <b>Done</b> saves over the original
+              and copies it.<br />
+              <b>The trash can</b> moves the file to the Trash, and <b>Clear Shots</b> moves them
+              all; Undo brings them back.`;
+
+function renderShotter() {
+  document.body.dataset.view = "shotter";
+  app.innerHTML = `
+    ${titlebar("Shotter", "shotter")}
+    <div class="panel shotter" data-mode="noob">
+      <header class="panel-head">
+        <div class="head-left"><span class="shot-count"></span></div>
+        <div class="head-right">
+          ${helpButton(SHOTTER_HELP)}
+        </div>
+      </header>
+      <div class="shot-host"></div>
+      <footer class="panel-foot"></footer>
+    </div>`;
+  shotter.mount(app.querySelector<HTMLElement>(".shot-host")!);
+  wireViewSwitch();
+  refreshShotterChrome(true);
+}
+
+let shotterChromeKey = "";
+
+/** Shotter's count and footer. Rebuilt only when they would change. */
+function refreshShotterChrome(force = false) {
+  const panel = app.querySelector(".panel.shotter");
+  if (!panel) return;
+  const key = `${shotter.count()}|${shotter.undoOffered()}`;
+  if (!force && key === shotterChromeKey) return;
+  shotterChromeKey = key;
+  const n = shotter.count();
+  panel.querySelector(".shot-count")!.textContent =
+    n === 0 ? "No screenshots yet" : `${n} screenshot${n === 1 ? "" : "s"}`;
+  const foot = panel.querySelector(".panel-foot")!;
+  foot.innerHTML = `
+    <button class="ghost" id="clear-shots"${n ? "" : " disabled"}
+      title="Move every screenshot here to the Trash">Clear Shots</button>
+    ${
+      shotter.undoOffered()
+        ? `<button class="ghost undo" id="undo-trash" title="Put back what was just moved to the Trash">${UNDO_ICON} Undo</button>`
+        : ""
+    }
+    <span class="spacer"></span>
+    <span class="tip">${BACKGROUND_TIP}</span>`;
+  foot.querySelector("#clear-shots")?.addEventListener("click", () => shotter.trashAll());
+  foot.querySelector("#undo-trash")?.addEventListener("click", () => shotter.undoTrash());
+}
+
 function wireViewSwitch() {
   app.querySelectorAll<HTMLButtonElement>(".mode[data-view]").forEach((btn) => {
     btn.addEventListener("click", () => switchView(btn.dataset.view as jotter.View));
@@ -811,7 +873,7 @@ function wireViewSwitch() {
 function switchView(next: jotter.View) {
   if (next === view) return;
   const from = view;
-  // Each side has its own folders; a half-finished folder edit doesn't carry over.
+  // Each tool has its own folders; a half-finished folder edit doesn't carry over.
   menuOpen = false;
   editing = null;
   confirmDelete = null;
@@ -820,19 +882,22 @@ function switchView(next: jotter.View) {
     latest = deferred;
     deferred = null;
   }
-  if (next === "jotter") {
-    // Jotter keeps the height Paster had sized the window to.
+  if (from === "paster") {
+    // Jotter and Shotter keep the height Paster had sized the window to.
     jotter.rememberHeight(window.innerHeight);
-    view = next;
-    jotter.setView(next);
-    renderJotter();
-  } else {
+  } else if (from === "jotter") {
     jotter.flush();
-    view = next;
-    jotter.setView(next);
+  }
+  view = next;
+  jotter.setView(next);
+  if (next === "paster") {
     delete document.body.dataset.view;
     if (latest) renderMain(latest);
     fitMainWindow();
+  } else if (next === "jotter") {
+    renderJotter();
+  } else {
+    renderShotter();
   }
   crossFade(from, next);
   if (next === "jotter") jotter.focus();
@@ -867,13 +932,28 @@ async function startJotter() {
   });
   let resizeTimer: number | undefined;
   window.addEventListener("resize", () => {
-    if (view !== "jotter") return;
+    if (view === "paster") return;
     window.clearTimeout(resizeTimer);
     resizeTimer = window.setTimeout(() => jotter.rememberHeight(window.innerHeight), 250);
   });
-  if (jotter.view() !== "jotter") return;
-  view = "jotter";
-  renderJotter();
+}
+
+/** macOS: load Shotter's list and keep the view in step with it. */
+async function startShotter() {
+  shotter.onChange(() => refreshShotterChrome());
+  await shotter.start();
+}
+
+/**
+ * macOS: if the control panel was last left on Jotter or Shotter, open there, at
+ * the height it had.
+ */
+function openSavedView() {
+  const saved = jotter.view();
+  if (saved === "paster") return;
+  view = saved;
+  if (saved === "jotter") renderJotter();
+  else renderShotter();
   const h = jotter.savedHeight();
   if (h) getCurrentWindow().setSize(new LogicalSize(PANEL_WIDTH, h)).catch(() => {});
 }
@@ -892,10 +972,10 @@ const PANEL_WIDTH = 442;
 /** Size the control-panel window to exactly fit its content — no bottom gap,
  *  no scrollbar — and re-fit as slots fill (filled slots are a touch taller). */
 function fitMainWindow() {
-  // Jotter keeps whatever height the window had when it was switched to.
-  if (view === "jotter") return;
+  // Jotter and Shotter keep whatever height the window had when they were switched to.
+  if (view !== "paster") return;
   requestAnimationFrame(() => {
-    if (view === "jotter") return; // switched while this frame was pending
+    if (view !== "paster") return; // switched while this frame was pending
     const h = Math.ceil(document.body.getBoundingClientRect().height);
     if (h > 0) {
       getCurrentWindow()
@@ -911,6 +991,10 @@ function redraw() {
     redrawJotterChrome();
     return;
   }
+  if (view === "shotter") {
+    refreshShotterChrome(true);
+    return;
+  }
   if (latest && label !== "popup") {
     renderMain(latest);
     fitMainWindow();
@@ -923,9 +1007,9 @@ function render(state: StateDto) {
     renderPopup(state);
     return;
   }
-  // Jotter is showing. Keep the state for when Paster comes back, but leave the
-  // page alone: a redraw would take the note out from under the caret.
-  if (view === "jotter") {
+  // Jotter or Shotter is showing. Keep the state for when Paster comes back, but
+  // leave the page alone: a redraw would take the note out from under the caret.
+  if (view !== "paster") {
     latest = state;
     return;
   }
@@ -945,6 +1029,11 @@ async function boot() {
   // macOS: the Jotter reminder card, in a small window of its own.
   if (label === "reminder") {
     await reminders.startCard(app);
+    return;
+  }
+  // macOS: Shotter's markup window.
+  if (label === "markup") {
+    await markup.start(app);
     return;
   }
   // Re-fit the control panel whenever it's opened/focused, so it can't flash at
@@ -969,7 +1058,11 @@ async function boot() {
       if (e.key === "Escape" && menuOpen) closeMenu();
     });
   }
-  if (IS_MAC && label === "main") await startJotter();
+  if (IS_MAC && label === "main") {
+    await startJotter();
+    await startShotter();
+    openSavedView();
+  }
   try {
     const state = await invoke<StateDto>("get_state");
     render(state);
