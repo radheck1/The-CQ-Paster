@@ -35,10 +35,15 @@ independent set of 9.
 | Paste slot *N* | `Ctrl` + `<N>` + `V` | `⌘` + `<N>` + `V` |
 | Paste slot *N* as plain text | `Ctrl` + `Shift` + `<N>` + `V` | `⌘` + `Shift` + `<N>` + `V` |
 | Normal copy / paste | `Ctrl+C` / `Ctrl+V` (unchanged) | `⌘C` / `⌘V` (unchanged) |
+| Switch folder while the popup is up | — | `⌘` + `<N>`, then `←` / `→` |
 
 `N` is `1`–`9`. **Press the digit before the letter** — hold `Ctrl`, tap `2`,
 tap `C` to store the selection in slot 2; later hold `Ctrl`, tap `2`, tap `V` to
 paste it. On macOS, hold `⌘` instead.
+
+On macOS, while `⌘` and a digit have the popup up, `←` and `→` step through your
+folders in order, wrapping at the ends, one folder per press. The digit stays
+armed, so `C` or `V` then works on that slot in the folder you landed on.
 
 It works with **anything you can copy** — text, images, files, and app-specific
 formats — because each slot stores a byte-exact snapshot of every clipboard
@@ -51,7 +56,8 @@ normal clipboard, so a plain `Ctrl+V` still pastes whatever you had before.
 
 While CQ Paster is running, `Ctrl+1`…`Ctrl+9` become its trigger prefix, so those
 specific combos no longer reach the foreground app (e.g. browser tab-switching).
-Plain number typing is unaffected. The same applies to `⌘1`–`⌘9` on macOS.
+Plain number typing is unaffected. The same applies to `⌘1`–`⌘9` on macOS, and
+to `⌘←` / `⌘→` between pressing a digit and pressing `C` or `V`.
 
 ---
 

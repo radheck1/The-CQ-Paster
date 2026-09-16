@@ -900,6 +900,23 @@ button {
   color: var(--muted);
 }
 
+/* macOS, with more than one folder: chevrons either side of the name say that
+   ← and → switch folders. The name truncates; the chevrons never do. */
+.popup-chev {
+  flex: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.popup-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .popup-foot {
   font-size: 10.5px;
   color: var(--muted);

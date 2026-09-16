@@ -331,6 +331,23 @@ records one escape hatch that macOS has no analogue for — delayed rendering, s
 both. Too short and the target pastes the handed-back
 content; too long and a fast plain `Cmd+V` beats it.
 
+### 4.8 Arrows switch folders during a chord
+
+After `Cmd+<N>` arms a slot, `←` and `→` step through the folders in menu order,
+wrapping round. The callback does what it does for a digit: one atomic read
+(`pending_slot`), a channel send (`Action::StepFolder`), and swallows the key,
+repeats included, so it's one folder per press and the app never sees `Cmd+←`.
+With no slot armed, arrows pass straight through.
+
+The slot stays armed, so `C` or `V` acts on slot N of the folder switched to. The
+worker selects the folder, then persists and emits `state-updated`, which the
+popup and the control panel redraw from. The wrap-around is `stepped_folder`, a
+pure function with tests.
+
+**macOS only.** Windows' hook would take the same shape, but can't be run from
+here. The popup's chevrons and its arrow hint render only on macOS. The Windows
+popup's HTML was checked unchanged.
+
 ---
 
 ## 5. Hard-won lessons
@@ -936,8 +953,16 @@ Verified on macOS unless noted. Windows passes all of these.
       appearing, copy and paste, Trash, Clear Shots and Undo, markup saved and still tagged
       (`mdls -name kMDItemIsScreenCapture`)
 
+**Folder arrows** (§4.8)
+- [x] Stepping wraps both ways and does nothing with one folder — unit tests
+- [x] Popup: chevrons only with 2+ folders, a long name truncates without losing
+      them, the hint on its own line, the card fits 300×320 — WKWebView harness
+- [ ] In the installed app: `⌘+N` then `←` / `→` switches folders in the popup,
+      `C`/`V` then use the new folder, and `⌘←` / `⌘→` still work in apps
+      otherwise
+
 **Regression**
-- [x] `cargo test` passes — 54 tests on macOS, plus 4 `#[ignore]`d
+- [x] `cargo test` passes — 56 tests on macOS, plus 4 `#[ignore]`d
       live tests run with `cargo test -- --ignored`
 - [x] The **Windows** build still compiles — checked by CI
       (`.github/workflows/ci.yml`), which builds and tests both platforms on

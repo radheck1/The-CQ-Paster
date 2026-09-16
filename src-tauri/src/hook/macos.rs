@@ -186,6 +186,8 @@ enum Action {
     Copy(usize),
     /// Cmd+<N>+V: paste slot N. `plain` (Shift held) strips formatting.
     Paste(usize, bool),
+    /// Cmd+<N>, then ← (-1) or → (+1): switch to the neighbouring folder.
+    StepFolder(isize),
     /// Cmd released: the chord is over, so the popup comes down.
     ChordEnd,
 }
@@ -460,6 +462,22 @@ extern "C" fn tap_callback(
             }
             event
         }
+        VK_LEFT_ARROW | VK_RIGHT_ARROW => {
+            // Only while a slot is armed, so a plain Cmd+← / Cmd+→ still reaches
+            // the app. The slot stays armed: C or V then acts on the same slot
+            // in the folder switched to. One folder per press; repeats are
+            // swallowed too, so the app doesn't see them either.
+            if ctx.pending_slot.load(Ordering::SeqCst) == 0 {
+                return event;
+            }
+            let repeat =
+                unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_AUTOREPEAT) } != 0;
+            if !repeat {
+                let by = if keycode == VK_RIGHT_ARROW { 1 } else { -1 };
+                let _ = ctx.tx.send(Action::StepFolder(by));
+            }
+            std::ptr::null_mut()
+        }
         _ => event,
     }
 }
@@ -607,6 +625,19 @@ fn worker(
                 show_popup(&app, &state, (x, y));
             }
             Action::ChordEnd => hide_popup(&app, &state),
+            Action::StepFolder(by) => {
+                let switched = {
+                    let mut folders = state.folders.lock().unwrap();
+                    let ids: Vec<u64> = folders.folder_dtos().iter().map(|f| f.id).collect();
+                    stepped_folder(&ids, folders.active_id(), by).is_some_and(|id| folders.select(id))
+                };
+                if switched {
+                    trace(&format!("folder step {by:+}"));
+                    state.persist();
+                    crate::refresh_tray(&app, &state); // the tray names the active folder
+                    refresh_state(&app, &state); // the popup and control panel follow
+                }
+            }
             Action::Copy(slot) => {
                 trace(&format!("COPY -> slot {slot}"));
 
@@ -730,6 +761,16 @@ fn worker(
 }
 
 /// Push fresh state to the frontend without touching the popup's visibility.
+/// The folder `by` places along from the active one, in the folder menu's order,
+/// wrapping round at the ends. `None` with a single folder.
+fn stepped_folder(ids: &[u64], active: u64, by: isize) -> Option<u64> {
+    if ids.len() < 2 {
+        return None;
+    }
+    let at = ids.iter().position(|&id| id == active)? as isize;
+    Some(ids[(at + by).rem_euclid(ids.len() as isize) as usize])
+}
+
 fn refresh_state(app: &AppHandle, state: &Arc<AppState>) {
     let _ = app.emit("state-updated", state.to_dto());
 }
@@ -862,6 +903,9 @@ fn inject_paste() {
 // Virtual key codes (`Events.h`).
 const VK_C: i64 = 0x08;
 const VK_V: i64 = 0x09;
+// kVK_LeftArrow / kVK_RightArrow.
+const VK_LEFT_ARROW: i64 = 0x7B;
+const VK_RIGHT_ARROW: i64 = 0x7C;
 
 fn is_command_key(keycode: i64) -> bool {
     matches!(keycode, 0x37 | 0x36) // left / right Command
@@ -938,6 +982,25 @@ mod tests {
         assert!(is_command_key(0x37));
         assert!(is_command_key(0x36));
         assert!(!is_command_key(VK_C));
+    }
+
+    #[test]
+    fn arrows_step_through_folders_in_order_and_wrap() {
+        let ids = [1, 4, 9];
+        assert_eq!(stepped_folder(&ids, 1, 1), Some(4));
+        assert_eq!(stepped_folder(&ids, 9, 1), Some(1), "→ on the last wraps to the first");
+        assert_eq!(stepped_folder(&ids, 1, -1), Some(9), "← on the first wraps to the last");
+        assert_eq!(stepped_folder(&ids, 4, -1), Some(1));
+        assert_eq!(stepped_folder(&[1], 1, 1), None, "nowhere to go with one folder");
+        assert_eq!(stepped_folder(&ids, 7, 1), None, "an unknown active folder");
+    }
+
+    #[test]
+    fn arrows_are_not_digits_or_chord_letters() {
+        for key in [VK_LEFT_ARROW, VK_RIGHT_ARROW] {
+            assert_eq!(digit_of(key), None);
+            assert!(key != VK_C && key != VK_V);
+        }
     }
 
     /// The mask must cover exactly the two event types we subscribe to; the
