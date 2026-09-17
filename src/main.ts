@@ -173,18 +173,28 @@ function renderPopup(state: StateDto) {
     })
     .join("");
 
+  // macOS: with more than one folder, ← and → switch between them while the
+  // popup is up. Windows renders exactly as before.
+  const cycle = IS_MAC && state.folders.length > 1;
+  const folder = cycle
+    ? `<span class="popup-chev" aria-hidden="true">‹</span>${FOLDER_ICON}<span class="popup-folder-name">${escapeHtml(
+        state.folderName,
+      )}</span><span class="popup-chev" aria-hidden="true">›</span>`
+    : `${FOLDER_ICON}${escapeHtml(state.folderName)}`;
+  const foot = IS_MAC
+    ? `${MOD}+N+C copy · ${MOD}+N+V paste<br />+Shift = plain · ← → folder`
+    : `${MOD}+N+C copy · ${MOD}+N+V paste · +Shift = plain text`;
+
   app.innerHTML = `
     <div class="popup">
       <div class="popup-head">
         <img class="popup-logo theme-logo for-dark" src="/logo-white.png" alt="" />
         <img class="popup-logo theme-logo for-light" src="/logo-black.png" alt="" />
         <span>Paster</span>
-        <span class="popup-folder" title="Active folder">${FOLDER_ICON}${escapeHtml(
-          state.folderName,
-        )}</span>
+        <span class="popup-folder" title="Active folder">${folder}</span>
       </div>
       <ul class="popup-list">${rows}</ul>
-      <div class="popup-foot">${MOD}+N+C copy · ${MOD}+N+V paste · +Shift = plain text</div>
+      <div class="popup-foot">${foot}</div>
     </div>`;
 }
 
@@ -604,6 +614,8 @@ function renderMain(state: StateDto) {
               <br /><br />
               <b>Folders</b> each hold their own 9 slots — hotkeys, Clear all and Undo
               apply only to the folder you're in.${
+                IS_MAC ? ` Hold <b>${MOD}+&lt;N&gt;</b> and press <b>←</b> / <b>→</b> to switch folders.` : ""
+              }${
                 IS_MAC
                   ? ""
                   : `
