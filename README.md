@@ -125,6 +125,9 @@ Your screenshots, in the same window. Pick **Shotter** in the title bar.
   once its floating thumbnail goes away. Turn off **Show Floating Thumbnail** in
   the Screenshot app's Options (⌘⇧5) to make it immediate.
 - **Click a screenshot** to copy it, then paste anywhere.
+- **Click its name** to rename it. The file itself is renamed where it sits, so
+  Finder and Spotlight see the new name too. A name another file already has is
+  refused rather than replacing that file.
 - **The trash can** moves the file to the Trash, and **Clear Shots** moves every
   screenshot in the list there, each with a 10-second **Undo**.
 - **The pencil** opens it in a markup window: a pen and an arrow, six colours,

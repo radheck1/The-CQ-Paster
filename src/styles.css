@@ -1688,9 +1688,59 @@ body[data-window="markup"] {
 }
 
 .shot-meta {
+  display: flex;
+  align-items: center;
   margin: 6px 2px 0;
   font-size: 11.5px;
   color: var(--muted);
+}
+
+/* The name reads as part of the caption until it's pointed at, so the card stays
+   quiet; clicking it opens the field. */
+.shot-name {
+  min-width: 0;
+  max-width: 62%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+
+.shot-name:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.shot-when::before {
+  content: "·";
+  margin: 0 6px;
+  color: var(--empty);
+}
+
+.shot-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--shot);
+  border-radius: 6px;
+  padding: 2px 6px;
+  outline: none;
+}
+
+.shot-error {
+  flex: none;
+  margin-left: 8px;
+  color: var(--danger);
+  white-space: nowrap;
 }
 
 .shot-actions {

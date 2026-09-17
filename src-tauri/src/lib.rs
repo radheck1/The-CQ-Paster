@@ -860,6 +860,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             shotter::shots_trash_all,
             #[cfg(target_os = "macos")]
+            shotter::shot_rename,
+            #[cfg(target_os = "macos")]
             shotter::shot_untrash,
             #[cfg(target_os = "macos")]
             shotter::shot_markup,

@@ -4,9 +4,9 @@
  *
  * The list lives in the backend (`shotter.rs`), which watches the folder macOS
  * saves screenshots to and keeps the list across launches. This module draws it
- * and passes on what the user does with a screenshot: click to copy it, the
- * pencil to mark it up, the trash can to move it to the Trash. Clear Shots moves
- * them all, and either comes with a short Undo.
+ * and passes on what the user does with a screenshot: click to copy it, click
+ * its name to rename the file, the pencil to mark it up, the trash can to move it
+ * to the Trash. Clear Shots moves them all, and either comes with a short Undo.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -49,6 +49,8 @@ const thumbs = new Map<string, string>();
 /** Until when Undo is offered for the last trash, of one screenshot or all of them. */
 let undoUntil = 0;
 let undoTimer: number | undefined;
+/** The screenshot whose name is being typed; the list holds still while it is. */
+let editing: number | null = null;
 
 // Created once and kept, like Jotter's editor: switching tools re-attaches it,
 // so its scroll position survives.
@@ -83,7 +85,10 @@ function apply(next: ShotList) {
   // Drop thumbnails for screenshots that are gone or have changed.
   const live = new Set(shots.map(thumbKey));
   for (const key of thumbs.keys()) if (!live.has(key)) thumbs.delete(key);
-  draw();
+  // Redrawing now would take the name field away mid-word, and a screenshot can
+  // arrive at any moment. Closing the field draws, by which time `shots` is
+  // whatever the latest update left here.
+  if (editing === null) draw();
   onChangeFn();
 }
 
@@ -137,7 +142,10 @@ function draw() {
             ${src ? `<img src="${src}" alt="" />` : `<span class="shot-loading"></span>`}
             <span class="shot-copied">✓ Copied</span>
           </button>
-          <figcaption class="shot-meta">${esc(timeLabel(s.taken, now))}</figcaption>
+          <figcaption class="shot-meta">
+            <button class="shot-name" data-rename="${s.id}" title="Click to rename · ${esc(s.name)}">${esc(baseName(s.name))}</button>
+            <span class="shot-when">${esc(timeLabel(s.taken, now))}</span>
+          </figcaption>
           <div class="shot-actions">
             ${
               s.editable
@@ -158,7 +166,70 @@ function draw() {
   list.querySelectorAll<HTMLButtonElement>("[data-trash]").forEach((b) =>
     b.addEventListener("click", () => trash(Number(b.dataset.trash))),
   );
+  list.querySelectorAll<HTMLButtonElement>("[data-rename]").forEach((b) =>
+    b.addEventListener("click", () => startRename(Number(b.dataset.rename))),
+  );
   loadThumbnails();
+}
+
+/** The name without its extension: the part worth typing over. */
+const baseName = (name: string) => name.replace(/\.[^.]+$/, "");
+
+/**
+ * Click a name to type a new one, the same as renaming a folder or a jotpad:
+ * Enter saves, Escape cancels, clicking away saves. A name the folder already
+ * has keeps the field open with the reason, since the alternative is replacing
+ * a file that may not even be a screenshot.
+ */
+function startRename(id: number) {
+  const shot = shots.find((s) => s.id === id);
+  const meta = list.querySelector<HTMLElement>(`.shot[data-id="${id}"] .shot-meta`);
+  if (!shot || !meta) return;
+  editing = id;
+  meta.innerHTML = `<input class="shot-rename" type="text" aria-label="Screenshot name" /><span class="shot-error" role="status"></span>`;
+  const input = meta.querySelector("input")!;
+  const error = meta.querySelector(".shot-error")!;
+  input.value = baseName(shot.name);
+  input.focus();
+  input.select();
+
+  let closed = false;
+  let saving = false;
+  const close = () => {
+    closed = true;
+    editing = null;
+    draw();
+  };
+  const save = async () => {
+    if (closed || saving) return;
+    const typed = input.value.trim();
+    if (!typed || typed === baseName(shot.name)) return close();
+    saving = true;
+    input.disabled = true;
+    try {
+      await invoke<string>("shot_rename", { id, name: typed });
+      close(); // the backend's update redraws too; this is just immediate
+    } catch (e) {
+      const reason = String(e);
+      if (reason === "empty") return close();
+      error.textContent = reason === "taken" ? "That name is taken" : "Couldn't rename that file";
+      input.disabled = false;
+      input.focus();
+      input.select();
+    } finally {
+      saving = false;
+    }
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void save();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  });
+  input.addEventListener("blur", () => void save());
 }
 
 let loading = false;
