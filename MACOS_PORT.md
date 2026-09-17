@@ -32,7 +32,9 @@ which slot is targeted before the action fires.
 set of 9 slots. Copy/paste/clear/undo all act on the active folder only.
 The folder named **Main** is permanent and cannot be renamed or deleted.
 
-**Two modes:** *Master* (zero UI) and *Noob* (a reference popup near the cursor).
+**Modes (Windows only):** *Master* (zero UI) and *Noob* (a reference popup near
+the cursor). macOS has no modes — the popup always shows — and its control panel
+also hosts **CQ Jotter**, a notepad (§7.4).
 
 **Accepted tradeoff:** the app claims `Ctrl+1`–`Ctrl+9` / `Cmd+1`–`Cmd+9` as its
 trigger prefix, so browser tab-switching shortcuts stop working while it runs.
@@ -54,11 +56,17 @@ the guarantee that macOS work cannot affect it.
 | `src-tauri/src/clipboard.rs` | Dispatch + the Windows clipboard layer |
 | `src-tauri/src/clipboard/macos.rs` | `NSPasteboard` layer |
 | `src-tauri/src/permissions.rs` | macOS permission flow (Accessibility, Input Monitoring) |
-| `src/main.ts` | Frontend for both windows; `MOD` renders `Ctrl` or `⌘` |
+| `src/main.ts` | Frontend for both windows; `MOD` renders `Ctrl` or `⌘`. On macOS, also the Paster / Jotter switch |
+| `src/jotter.ts` | macOS only: Jotter's folders, notes and editor |
+| `src/outline.ts` | The note model — lines with depths; every edit a pure function |
+| `src-tauri/src/jotter.rs` | macOS only: Jotter storage, `jotter.json` |
+| `src-tauri/src/reminders.rs` | macOS only: reminder schedule, card window, sound, menu-bar dot |
+| `src/reminders.ts` | macOS only: the clock button's settings menu, and the reminder card |
+| `src-tauri/capabilities/reminder.json` | macOS only (`platforms`): lets the card's window receive events |
 | `src/styles.css` | Theme tokens; macOS-specific rules scoped to `[data-platform="macos"]` |
 
-**Gating rule:** everything macOS-specific is behind `#[cfg(target_os = "macos")]`
-or `[data-platform="macos"]`. Items that used to be shared and are now
+**Gating rule:** everything macOS-specific is behind `#[cfg(target_os = "macos")]`,
+`[data-platform="macos"]` in CSS, or `IS_MAC` in the frontend. Items that used to be shared and are now
 Windows-shaped use `#[cfg(not(target_os = "macos"))]`, **not** `#[cfg(windows)]`,
 so the Linux build keeps compiling as it did before.
 
@@ -472,8 +480,10 @@ launched. Quit before installing.
   style mask afterwards showed `Titled` and `Closable` still absent. Compose the
   mask explicitly instead.
 - The frontend re-renders wholesale on `state-updated`. Renders are **deferred
-  while the user is typing a folder name**.
-- `set_mode` deliberately **emits no event** so the mode toggle can cross-fade.
+  while the user is typing a folder name**. In Jotter view the update is only
+  stored: a redraw would replace the note under the caret (§7.4).
+- `set_mode` (Windows) deliberately **emits no event** so the mode toggle can
+  cross-fade.
 
 ---
 
@@ -532,6 +542,139 @@ the first **release** launch enables it and writes a marker, baking **whatever
 path the app is at** into the login item. Install to `/Applications` *before*
 first launch, or the login item points at `~/Downloads` or a build directory
 forever.
+
+### 7.4 CQ Jotter
+
+A notepad per folder, sharing the control panel with Paster. **macOS only for
+now**: `jotter.rs` and its two commands are behind `#[cfg(target_os = "macos")]`,
+and the frontend only calls into `jotter.ts` when `IS_MAC`. The Windows control
+panel's HTML was checked to be unchanged by rendering the old and new `main.ts`
+side by side with a Windows user agent, across the folder menu's states.
+
+**Storage is JSON on purpose.** `jotter.json`, beside `folders.bin`, is written
+to a temporary file, flushed and renamed over the old one. bincode would turn any
+future field into silent data loss, and a note is the one thing in the app that
+can't be recaptured by copying it again. A file that won't parse is renamed
+`jotter.unreadable-<secs>.json`, never overwritten; one that can't be read at all
+makes the frontend refuse to save for the session.
+
+**The model is a flat list of lines with depths** (`outline.ts`), not a tree — a
+line's sub-lines are simply the deeper lines after it. Every edit is a pure
+function returning new arrays, so an undo snapshot is just a reference.
+`normalize` repairs indentation after lines are joined without turning siblings
+into a staircase.
+
+**The editor.** One contenteditable with a div per line. WebKit does the typing
+inside a line, so accents, dictation and spelling corrections stay native.
+Anything structural is intercepted (`beforeinput`, `keydown`, `paste`, `copy`,
+`cut`), applied to the model and redrawn: Return, Tab, Backspace or Delete at a
+line's edge, and any delete or insert that spans lines. The dots sit in a layer
+*over* the text rather than in the editable content, so the caret and selection
+can never land on one. Their positions come from each line's `offsetTop`, and the
+geometry constants in `jotter.ts` must match `.j-line` in `styles.css`.
+
+**Undo is the Jotter's own.** Intercepted edits never reach WebKit's undo stack,
+so ⌘Z is handled in `keydown`, with `historyUndo` as a fallback. Keystrokes on
+one line with no pause over 1.5 s undo as one step.
+
+**Jotpads.** On screen, Jotter's folders are *jotpads*, with a notepad icon; the
+code and `jotter.json` still say `folders`. The folder menu is shared with Paster
+and takes its noun and icon from its `FolderSource`, so Paster's HTML doesn't
+change. On macOS the footer of both views reads "You can close this window. cQ
+runs in the background."; Windows keeps its wording.
+
+**Clear Jots** removes only the crossed-out lines (`removeCrossed`). Its Undo,
+`restoreCrossed`, puts each removed run back after the line it followed. Those
+lines are found again in the note as it is now by text and indent (a longest
+common subsequence), so anything typed or edited during the 10 seconds is kept.
+
+**Crossing out is inherited.** A line reads as crossed out if it or any line it
+sits under is marked done. A sub-line of a crossed group can't be toggled on its
+own, and bringing the parent back restores each sub-line's own state.
+
+**Window height.** Paster sizes the window to fit its slots; Jotter never resizes
+it. `fitMainWindow` is gated off in Jotter view, and the height at switch time —
+or after a manual resize — is saved, so a launch straight into Jotter opens at
+that height.
+
+**Redraws.** `state-updated` keeps arriving while Jotter is showing, on every
+chord. Rebuilding the page then would take the note out from under the caret, so
+Jotter view only stores the state, and patches its folder menu and footer in
+place instead of re-rendering.
+
+**How it was verified.** The model with Node unit tests; the editor in a real
+`WKWebView` — the engine the app uses, not a browser — driven by native `NSEvent`
+keys and clicks through AppKit, with Tauri's IPC mocked (88 checks, across a
+simulated relaunch). Neither script is in the repo. Two traps in that setup,
+should it be rebuilt: an inactive app's window swallows the first click unless
+the web view accepts first mouse, and WebKit re-sends unhandled ⌘ shortcuts
+through `NSApp.keyWindow`, which is `nil` in an app that was never activated — so
+⌘A can't be exercised that way.
+
+### 7.5 Jotter reminders
+
+Per folder: on or off, every N minutes, a window of hours and days, and a sound.
+The settings are saved with the folder in `jotter.json`; `customEvery` and
+`hours` exist only for the menu.
+
+**The schedule runs in Rust, not in the web view.** The control panel is hidden
+most of the time, and a hidden web view's timers are throttled. `jotter_save`
+hands every saved document to `reminders::update_doc`, which parses only the
+folders, lines and settings (unknown fields ignored; a missing `reminder` means
+off). A thread checks every 15 s.
+
+**The rules**, all pure functions with tests:
+- Times are multiples of `every` counted from midnight, so hourly lands on the
+  hour. Both ends of the window count. A window with `start > end` runs past
+  midnight and belongs to the day it opened.
+- Each time fires once. A time found more than 90 s late is skipped: the Mac slept.
+- A folder with nothing open stays quiet — the same crossing-out rule as
+  `outline.ts`.
+- A snooze (10 min) holds the regular schedule until it fires.
+- Switching reminders on starts with the next time, not the one just past.
+
+**The card** is a second window, `reminder`, created in code on macOS only rather
+than declared in `tauri.conf.json`, so Windows gets no hidden extra web view. It
+reuses the popup's float and order-front helpers, plus `accept_first_mouse`, so a
+click presses the button instead of only activating the window. The backend
+emits the card; the window draws it, measures it without waiting for a frame (a
+hidden window may never get one), and calls `reminder_present` with its height,
+which places it top-right of the screen under the pointer. It needs its own
+capability, or it can't receive events at all. Crossing lines out
+while a card is up updates it, and crossing out the last one takes it down.
+
+**Place windows in AppKit points, not Tauri positions.** The card first used
+Tauri's `cursor_position`, `monitor_from_point`, `work_area` and `set_position`.
+With a 2x laptop and 1x external displays those disagree: the pointer is scaled
+by the primary screen's factor, each monitor's area by its own, and a window
+move by the factor of whichever screen the window was last on. The pointer
+matched no monitor, the code fell back to the laptop, and the card landed
+mid-screen on an external display. `place_card` now reads `NSEvent.mouseLocation`
+and `NSScreen` frames and sets the `NSWindow` frame directly — one coordinate
+space for every screen. A unit test holds that three-screen layout.
+
+**The menu-bar dot** can't be part of the icon, because template images are drawn
+in a single colour. It's an `NSBox` laid over the status item's button, reached
+through `with_inner_tray_icon` — which blocks on the main thread, so, like
+`refresh_tray`, it always runs from a spawned thread.
+
+**Focus.** Clicking the card activates CQ. Dismiss and Snooze call
+`NSApplication.deactivate()` when the control panel isn't showing, to hand focus
+back to the app the user was in. Not yet confirmed in the installed app.
+
+**Same limitation as the popup:** the card doesn't draw over another app's
+full-screen Space.
+
+**Dismiss and Snooze don't bring the control panel forward.** Clicking the card
+makes CQ the active app, and when an active app's key window goes, macOS makes its
+next window key and brings it to the front: the control panel, if it's open behind
+other windows. `put_away` checks the on-screen window list (`CGWindowListCopyWindowInfo`)
+first. If the panel is the frontmost ordinary window, the user was in it and stays
+there. Otherwise CQ deactivates, and the card is hidden 150 ms later. The card
+is also ordered in directly rather than with `show()`, which would make it the key
+window and take the keyboard from the panel mid-typing. Found with `log_windows`,
+which records the panel's state and the frontmost app when a card is shown, when
+Dismiss or Snooze is pressed, and a second later; remove it once this is confirmed.
 
 ---
 
@@ -670,14 +813,41 @@ Verified on macOS unless noted. Windows passes all of these.
 - [ ] Menu-bar folder submenu switches folders
 
 **Windows/UI**
-- [x] Noob popup appears near the cursor and never steals focus
+- [x] Cursor popup appears near the cursor and never steals focus
 - [x] Popup stays while Cmd is held and follows the cursor
 - [x] Menu bar icon looks right in light and dark
 - [ ] Popup over a full-screen app — **known limitation**, §7.2
 - [ ] Start-on-login verified end to end
 
+**Jotter** (§7.4)
+- [x] The switch flips the content, keeps the window height, and the title follows
+- [x] Typing, Return, Tab / Shift+Tab, Backspace at line edges, deleting and
+      typing across lines — native WebKit input
+- [x] Crossing out a line crosses out its group; sub-lines of a crossed group are inert
+- [x] ⌘Z / ⇧⌘Z step through edits one at a time
+- [x] Clear Jots removes only crossed-out lines; Undo puts them back in place,
+      keeping anything typed after the clear
+- [x] Jotpads: create, switch (caret restored), delete; counts show open lines
+- [x] Notes, folders, last side and height survive a relaunch
+- [x] A Paster update mid-typing leaves the note and the caret alone
+- [ ] In the installed app: ⌘A, ⌘+N+V into a note, press-and-hold accents and IME
+
+**Jotter reminders** (§7.5)
+- [x] Schedule rules — unit tests: clock alignment, window ends, overnight
+      windows, days, once per time, skipped after sleep, snooze, nothing open
+- [x] Settings menu: on/off, presets and custom, working or custom hours and days,
+      sound with preview, independent per folder — WKWebView harness
+- [x] Card: open lines per folder, the rest counted, names escaped, sizes itself,
+      buttons reach the backend — WKWebView harness
+- [x] The card lands top-right of the screen under the pointer — checked on a
+      2x laptop with two 1x displays, one of them portrait
+- [ ] In the installed app: sound, menu-bar dot, focus after Dismiss or Snooze,
+      and a real scheduled reminder firing
+- [ ] Dismiss and Snooze leave the control panel where it was, and don't take the
+      keyboard from it when the card appears — fixed, to confirm (§7.5)
+
 **Regression**
-- [x] `cargo test` passes — 27 tests (11 original + 16 macOS), plus 4 `#[ignore]`d
+- [x] `cargo test` passes — 44 tests on macOS, plus 4 `#[ignore]`d
       live tests run with `cargo test -- --ignored`
 - [x] The **Windows** build still compiles — checked by CI
       (`.github/workflows/ci.yml`), which builds and tests both platforms on
@@ -698,3 +868,7 @@ Verified on macOS unless noted. Windows passes all of these.
 - Stamp the DMG filename with a version or build id (§5.13).
 - Developer ID signing and notarization, if the app is ever distributed beyond
   a machine that trusts the self-signed certificate.
+- Jotter on Windows. The frontend is shared, so it needs `jotter.rs` un-gated,
+  the `IS_MAC` checks around the switch lifted, and a look on a real Windows
+  machine. Reminders would need a Windows card window, sound and tray badge.
+- Confirm the reminder card hands focus back after Dismiss or Snooze (§7.5).

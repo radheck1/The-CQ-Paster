@@ -46,13 +46,28 @@ objc2-app-kit = { version = "0.3", features = [
   "NSApplication",
   "NSWorkspace",
   "NSRunningApplication",
+  # Jotter reminders: the sound, and the dot over the menu-bar icon.
+  "NSSound",
+  "NSBox",
+  "NSStatusItem",
+  "NSStatusBarButton",
+  # ...and placing the reminder card on the screen under the pointer.
+  "NSScreen",
+  "NSEvent",
 ] }
 objc2-foundation = { version = "0.3", features = [
   "NSArray",
   "NSString",
   "NSData",
   "NSURL",
+  "NSGeometry",
+  # Reminder card: reading the on-screen window list.
+  "NSDictionary",
+  "NSValue",
 ] }
+# Local time for the reminder schedule. Already built for Tauri, with this
+# feature set, so it adds nothing to the build.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(windows)'.dependencies]
 rdev = { version = "0.5", features = ["unstable_grab"] }

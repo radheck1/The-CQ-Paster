@@ -68,7 +68,7 @@ tray's **Folder** submenu.
 
 ---
 
-## Modes
+## Modes (Windows)
 
 - **Master** — zero UI. Just you, the hotkeys, and your memory of what's where.
 - **Noob** — a small reference popup appears next to your cursor showing all 9
@@ -76,6 +76,36 @@ tray's **Folder** submenu.
 
 Toggle from the tray icon or the control panel. The app lives in the **system
 tray**; closing the control-panel window keeps it running.
+
+macOS has no modes: the popup always appears. The switch in that spot flips the
+control panel between Paster and **CQ Jotter** instead.
+
+---
+
+## CQ Jotter (macOS)
+
+A notepad in the same window. Flip the switch in the top right from **Paster** to
+**Jotter**; the window keeps its size and a note takes the place of the slots.
+
+- **Every line has a dot.** Return starts a new line.
+- **Tab** tucks a line under the one above; **Shift+Tab** brings it back out.
+  A line's sub-lines move with it.
+- **Click a dot** to cross out that line *and everything tucked under it*. Click
+  it again to bring them back.
+- **Jotpads** are Jotter's own, one note each. **Main Jots** is permanent.
+- **Clear Jots** removes the lines you've crossed out and keeps the rest, with
+  the same 10-second **Undo** as Paster. ⌘Z and ⇧⌘Z step through individual edits.
+- Plain text only. Notes save as you type, to `jotter.json` beside the slots.
+- The control panel reopens on whichever side you left it.
+- **Reminders**, per jotpad. The clock beside the jotpad menu turns them on and
+  sets how often (15 minutes to 2 hours, or custom), when (working hours, or your
+  own hours and days) and the sound. A reminder is a card in the top-right corner
+  listing what's still open, with **Open Jotter**, **Snooze 10 min** and
+  **Dismiss**, and the menu-bar icon gets an orange dot until you deal with it.
+  A jotpad with nothing open stays quiet, and a reminder the Mac slept through is
+  skipped rather than shown late.
+
+Your slot hotkeys work inside a note, so ⌘+N+V pastes a slot straight in.
 
 ---
 
@@ -110,17 +140,18 @@ same release as the Windows installer.
 | **First-run security prompt** | SmartScreen → *More info → Run anyway* | Gatekeeper → **right-click → Open**, or `xattr -dr com.apple.quarantine` |
 | **Extra permissions** | None | **Accessibility** and **Input Monitoring** must be granted in System Settings → Privacy & Security, or the hotkeys cannot work |
 | **Under the hood** | Win32 clipboard + low-level keyboard hook | `NSPasteboard` + `CGEventTap` |
+| **Modes** | Master and Noob | None — the popup always shows, and the switch opens **CQ Jotter** |
 
-Everything else — folders, the 9 slots, both modes, plain-text paste, slot
-persistence, start-on-login — is shared code and behaves identically. The slot
-store and the entire frontend are platform-independent.
+Everything else — folders, the 9 slots, plain-text paste, slot persistence,
+start-on-login — is shared code and behaves identically. The slot store and most
+of the frontend are platform-independent; Jotter is macOS-only for now.
 
 **The one thing macOS users must do that Windows users don't:** grant
 Accessibility **and** Input Monitoring. Both are required — with only the first,
 the keyboard tap is created successfully and then never receives a single event,
 so nothing appears to happen at all.
 
-**Known macOS limitation:** the Noob-mode popup does not draw over another app's
+**Known macOS limitation:** the cursor popup and the reminder card don't draw over another app's
 full-screen Space.
 
 Working on the port? See **[MACOS_PORT.md](MACOS_PORT.md)** — architecture map,

@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "reminder",
+  "description": "The Jotter reminder card, which only exists on macOS",
+  "platforms": ["macOS"],
+  "windows": ["reminder"],
+  "permissions": ["core:default"]
+}
