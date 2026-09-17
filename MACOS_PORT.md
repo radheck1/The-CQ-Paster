@@ -725,6 +725,18 @@ writes a dot-file first. No FSEvents and no new crates; the hook is untouched.
 **The list** is `shotter.json` (ids, paths, times), written with `jotter::save`'s
 atomic write. Entries whose file is gone drop off on every scan.
 
+**Renaming** (`shot_rename`) moves the file where it sits, so the screenshot tag,
+its creation date and its place in the list all survive — a rename keeps the same
+file, unlike the copy-and-replace that saving markup does. The typed name is put
+through `clean_name`: no `/` (illegal) or `:` (Finder shows it as `/`), no leading
+dot (it would hide the file from Finder and from the scan), no trailing dots, and
+capped at 200 bytes, since the file system's 255 is in bytes and a name in a
+non-Latin script reaches it sooner. The extension is the original's, whatever was
+typed. A name another file already has is refused: replacing a file that may not
+even be a screenshot isn't the app's call. The list is updated under the scan's
+own lock, and the new path is marked as seen, so the scan can't come across the
+renamed file first and list it as a second screenshot.
+
 **Copy** writes the file's bytes as one pasteboard item of its type, through
 `clipboard::restore`. **Trash** (one screenshot, or all of them for Clear Shots)
 uses `NSFileManager.trashItemAtURL` and remembers where each file landed. Undo
@@ -945,12 +957,15 @@ Verified on macOS unless noted. Windows passes all of these.
       — unit tests
 - [x] List, copy, trash + Undo, Clear Shots + Undo, empty state, dark mode —
       WKWebView harness
+- [x] Renaming: click-to-edit, Enter, Escape, a taken name refused, a screenshot
+      arriving mid-word leaves the field alone — WKWebView harness; the file
+      moves and keeps its tag, and the scan doesn't re-list it — unit tests
 - [x] Markup: pen, arrow, colours, sizes, Undo, Esc/Cancel; Done sends a
       full-size PNG with the marks in it — WKWebView harness
 - [x] Saving over the original keeps the screen-capture tags and pixel density
       — unit tests
 - [ ] In the installed app: the Desktop-access prompt, a real screenshot
-      appearing, copy and paste, Trash, Clear Shots and Undo, markup saved and still tagged
+      appearing, copy and paste, renaming, Trash, Clear Shots and Undo, markup saved and still tagged
       (`mdls -name kMDItemIsScreenCapture`)
 
 **Folder arrows** (§4.8)
@@ -962,7 +977,7 @@ Verified on macOS unless noted. Windows passes all of these.
       otherwise
 
 **Regression**
-- [x] `cargo test` passes — 56 tests on macOS, plus 4 `#[ignore]`d
+- [x] `cargo test` passes — 58 tests on macOS, plus 4 `#[ignore]`d
       live tests run with `cargo test -- --ignored`
 - [x] The **Windows** build still compiles — checked by CI
       (`.github/workflows/ci.yml`), which builds and tests both platforms on

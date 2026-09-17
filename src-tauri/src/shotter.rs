@@ -387,6 +387,78 @@ fn copy_image(path: &Path) -> bool {
     crate::clipboard::restore(&snap).is_ok()
 }
 
+/// The longest file name this will make, in bytes. The file system's own limit is
+/// 255, which a name in a non-Latin script reaches well before 255 characters.
+const NAME_MAX_BYTES: usize = 200;
+
+/// The file name a typed name should land on, keeping the original extension, or
+/// `None` when nothing usable is left.
+///
+/// A `/` cannot appear in a file name at all, and a `:` is what Finder shows as
+/// a `/`, so both go. A leading dot would hide the file from Finder and from the
+/// scan; trailing dots and spaces confuse Finder.
+fn clean_name(raw: &str, extension: &str) -> Option<String> {
+    let kept: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '/' | ':') && !c.is_control())
+        .collect();
+    let mut base = kept.trim().trim_start_matches('.').trim().to_string();
+    while base.len() > NAME_MAX_BYTES {
+        base.pop();
+    }
+    let base = base.trim_end().trim_end_matches('.').trim_end().to_string();
+    if base.is_empty() {
+        return None;
+    }
+    Some(if extension.is_empty() { base } else { format!("{base}.{extension}") })
+}
+
+/// Rename a screenshot's file. Returns the name it ended up with.
+///
+/// The errors are short words rather than sentences: the control panel says them
+/// in its own words, beside the field being typed in.
+#[tauri::command]
+pub fn shot_rename(app: AppHandle, id: u64, name: String) -> Result<String, String> {
+    let renamed = rename_entry(&mut state(), id, &name)?;
+    publish(&app);
+    Ok(renamed)
+}
+
+/// The rename itself, apart from the command so it can be tested.
+///
+/// The list is updated in the same breath as the file, under the lock the scan
+/// thread needs, so the scan can't come across the new name first and list it as
+/// a second screenshot.
+fn rename_entry(st: &mut State, id: u64, name: &str) -> Result<String, String> {
+    let Some(entry) = st.saved.shots.iter().find(|e| e.id == id) else {
+        return Err("gone".into());
+    };
+    let path = entry.path.clone();
+    let extension = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+    let file_name = clean_name(name, &extension).ok_or("empty")?;
+    let target = path.with_file_name(&file_name);
+    if target == path {
+        return Ok(file_name);
+    }
+    // `exists` follows the file system's own idea of equality, so on a
+    // case-insensitive disk "shot.png" already exists as "Shot.png": renaming
+    // only the case is a rename of the same file and is allowed through above.
+    if target.exists() {
+        return Err("taken".into());
+    }
+    if let Err(e) = std::fs::rename(&path, &target) {
+        crate::diag(&format!("shotter: could not rename {}: {e}", path.display()));
+        return Err("failed".into());
+    }
+    if let Some(entry) = st.saved.shots.iter_mut().find(|e| e.id == id) {
+        entry.path = target.clone();
+    }
+    st.seen.remove(&path);
+    st.seen.insert(target.clone());
+    st.pending.remove(&target);
+    Ok(file_name)
+}
+
 /// Move a screenshot's file to the Trash. The frontend offers Undo for a while.
 #[tauri::command]
 pub fn shot_trash(app: AppHandle, id: u64) -> bool {
@@ -816,6 +888,54 @@ mod tests {
         assert!(!st.pending.contains_key(&untagged), "given up on after the grace");
         tag(&untagged, SCREEN_CAPTURE_TAG, b"1");
         assert!(!scan(&mut st, &dir, t0 + SCAN * 4 + TAG_GRACE));
+    }
+
+    #[test]
+    fn a_typed_name_is_cleaned_up_and_keeps_its_extension() {
+        let clean = |raw: &str| clean_name(raw, "png");
+        assert_eq!(clean("Login bug"), Some("Login bug.png".into()));
+        assert_eq!(clean("  spaced  "), Some("spaced.png".into()));
+        assert_eq!(clean("in/valid: name"), Some("invalid name.png".into()));
+        assert_eq!(clean(".hidden"), Some("hidden.png".into()), "a leading dot would hide the file");
+        assert_eq!(clean("trailing..."), Some("trailing.png".into()));
+        assert_eq!(clean("   "), None);
+        assert_eq!(clean("///"), None);
+        assert_eq!(clean_name("no extension", ""), Some("no extension".into()));
+        let long = clean("é".repeat(400).as_str()).unwrap();
+        assert!(long.len() <= NAME_MAX_BYTES + 4, "capped in bytes: {}", long.len());
+        assert!(long.ends_with(".png"));
+    }
+
+    #[test]
+    fn renaming_moves_the_file_and_keeps_the_screenshot_in_place() {
+        let dir = scratch("rename");
+        let mut st = State::default();
+        let t0 = Instant::now();
+        scan(&mut st, &dir, t0);
+        let before = screenshot(&dir, "Screen Shot 1.png");
+        scan(&mut st, &dir, t0 + SCAN);
+        let id = st.saved.shots[0].id;
+
+        assert_eq!(rename_entry(&mut st, id, "Login bug").unwrap(), "Login bug.png");
+        let after = dir.join("Login bug.png");
+        assert!(after.is_file() && !before.exists(), "the file itself moved");
+        assert!(has_tag(&after), "still tagged as a screenshot");
+        assert_eq!(st.saved.shots.len(), 1);
+        assert_eq!(st.saved.shots[0].path, after);
+        assert_eq!(st.saved.shots[0].id, id, "the same screenshot, not a new one");
+
+        // The scan must not take the renamed file for a new screenshot.
+        assert!(!scan(&mut st, &dir, t0 + SCAN * 2));
+        assert_eq!(st.saved.shots.len(), 1);
+
+        // A name another file already has is refused, and nothing moves.
+        screenshot(&dir, "Taken.png");
+        assert_eq!(rename_entry(&mut st, id, "Taken"), Err("taken".into()));
+        assert!(after.is_file());
+        assert_eq!(rename_entry(&mut st, id, "   "), Err("empty".into()));
+        assert_eq!(rename_entry(&mut st, 999, "whatever"), Err("gone".into()));
+        // Renaming to the name it already has is a no-op, not a clash with itself.
+        assert_eq!(rename_entry(&mut st, id, "Login bug").unwrap(), "Login bug.png");
     }
 
     #[test]
