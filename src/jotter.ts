@@ -40,7 +40,8 @@ import {
   type Pos,
 } from "./outline";
 
-export type View = "paster" | "jotter";
+/** Which tool the control panel shows. Kept here because it is saved with the notes. */
+export type View = "paster" | "jotter" | "shotter";
 type Folder = { id: number; name: string; lines: Line[]; reminder: Reminder };
 
 /**
@@ -77,9 +78,9 @@ export const defaultReminder = (): Reminder => ({
 });
 type Doc = {
   version: 1;
-  /** Which side of the switch the control panel was last left on. */
+  /** Which tool the control panel was last left on. */
   view: View;
-  /** Window height for a launch that opens straight into Jotter. */
+  /** Window height for a launch that opens straight into Jotter or Shotter. */
   height: number | null;
   active: number;
   nextId: number;
@@ -176,7 +177,7 @@ function repairDoc(raw: unknown): Doc {
   const height = r.height;
   return {
     version: 1,
-    view: r.view === "jotter" ? "jotter" : "paster",
+    view: r.view === "jotter" || r.view === "shotter" ? r.view : "paster",
     height: typeof height === "number" && Number.isFinite(height) && height >= 200 ? Math.round(height) : null,
     active: folders.some((f) => f.id === r.active) ? (r.active as number) : folders[0].id,
     nextId,

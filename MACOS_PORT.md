@@ -56,13 +56,17 @@ the guarantee that macOS work cannot affect it.
 | `src-tauri/src/clipboard.rs` | Dispatch + the Windows clipboard layer |
 | `src-tauri/src/clipboard/macos.rs` | `NSPasteboard` layer |
 | `src-tauri/src/permissions.rs` | macOS permission flow (Accessibility, Input Monitoring) |
-| `src/main.ts` | Frontend for both windows; `MOD` renders `Ctrl` or `⌘`. On macOS, also the Paster / Jotter switch |
+| `src/main.ts` | Frontend for every window; `MOD` renders `Ctrl` or `⌘`. On macOS, also the Paster / Jotter / Shotter switch in the title bar |
 | `src/jotter.ts` | macOS only: Jotter's folders, notes and editor |
 | `src/outline.ts` | The note model — lines with depths; every edit a pure function |
 | `src-tauri/src/jotter.rs` | macOS only: Jotter storage, `jotter.json` |
 | `src-tauri/src/reminders.rs` | macOS only: reminder schedule, card window, sound, menu-bar dot |
 | `src/reminders.ts` | macOS only: the clock button's settings menu, and the reminder card |
 | `src-tauri/capabilities/reminder.json` | macOS only (`platforms`): lets the card's window receive events |
+| `src-tauri/src/shotter.rs` | macOS only: watching for screenshots, `shotter.json`, copy, trash, saving markup, the markup window |
+| `src/shotter.ts` | macOS only: Shotter's list of screenshots |
+| `src/markup.ts`, `src/markup-geom.ts` | macOS only: the markup window, and its geometry as pure functions |
+| `src-tauri/capabilities/markup.json` | macOS only (`platforms`): the markup window |
 | `src/styles.css` | Theme tokens; macOS-specific rules scoped to `[data-platform="macos"]` |
 
 **Gating rule:** everything macOS-specific is behind `#[cfg(target_os = "macos")]`,
@@ -676,6 +680,76 @@ window and take the keyboard from the panel mid-typing. Found with `log_windows`
 which records the panel's state and the frontmost app when a card is shown, when
 Dismiss or Snooze is pressed, and a second later; remove it once this is confirmed.
 
+### 7.6 CQ Shotter
+
+Screenshots taken while CQ is running, newest first, as a third tool beside
+Paster and Jotter. **macOS only**, like Jotter.
+
+**The switch moved into the title bar.** Three labelled tools don't fit in the
+header beside each tool's own controls, so on macOS `titlebar()` draws the switch
+where the window's name was. It reuses `.mode`, so the colours cross-fade as
+before; Shotter's blue is the same gradient recipe as the green and the orange.
+The bar stays a drag region: only the bar itself starts a drag, not its buttons.
+Windows keeps its title and its Master/Noob switch; its HTML was checked unchanged.
+
+**Finding screenshots** (`shotter.rs`). A thread reads the Screenshot app's folder
+(`com.apple.screencapture location` through `CFPreferences`, else the Desktop)
+once a second. The first successful read only notes what is already there. A
+file that appears later counts if it carries `com.apple.metadata:
+kMDItemIsScreenCapture`, which macOS sets on its own screenshots, rechecked for up
+to 5 s in case the tag lands after the file. Hidden files are skipped: macOS
+writes a dot-file first. No FSEvents and no new crates; the hook is untouched.
+
+- **Measured:** on the author's Mac, the file lands 3–7 s after the time in its
+  name, because of the floating thumbnail. Nothing CQ does can make it sooner.
+- **Desktop access** is a privacy-protected folder: the first read prompts, and
+  reads fail until it's answered.
+
+**The list** is `shotter.json` (ids, paths, times), written with `jotter::save`'s
+atomic write. Entries whose file is gone drop off on every scan.
+
+**Copy** writes the file's bytes as one pasteboard item of its type, through
+`clipboard::restore`. **Trash** (one screenshot, or all of them for Clear Shots)
+uses `NSFileManager.trashItemAtURL` and remembers where each file landed. Undo
+`rename`s them back, holding the list's lock so the scan thread can't list a
+returning file a second time, and re-sorts newest first.
+
+**Saving markup over the original** keeps what makes it a screenshot. The PNG
+from the canvas is written to a hidden file beside the original. It gets:
+- the original's extended attributes, including the screen-capture tag, which a
+  plain rename would lose, taking the file out of Shotter and Spotlight
+- the original's `pHYs` chunk, copied byte for byte, since a chunk's CRC doesn't
+  depend on its position, so a 144 dpi Retina screenshot still pastes at its size
+- the original's permissions
+
+It's then flushed and renamed over the original. The image travels as a raw IPC
+body (`tauri::ipc::Request`) with the id in a header, not as a JSON array of
+numbers, so a 5K screenshot doesn't become megabytes of text.
+
+**The markup window** is created in code the first time, like the reminder card.
+- **Title bar:** the main window's native title bar (`make_native_titlebar` now
+  takes a label).
+- **Size:** it fits the image within 85% of the screen under the pointer, in
+  AppKit points (§7.5). A `pHYs` of 144 dpi halves the image's size in points.
+- **Marks** are stored in image pixels, with the stroke width converted from
+  points when the stroke starts. Done redraws them on a full-size canvas.
+- **Closing** hides the window for next time.
+- **Loading an image:** `markup_current` covers a window that loads after the
+  `markup-open` event was sent.
+
+**How it was verified.**
+- **Rust unit tests:** baseline, tag and grace, pruning, folder setting, points
+  from `pHYs`, saving keeps tags and density, window size.
+- **Node:** geometry and time labels.
+- **WKWebView harness**, with the backend mocked:
+  - the tabs, including at the 380 px minimum width
+  - the list, copy, trash and Undo, and relaunch
+  - drawing with native mouse events, checked in the canvas's pixels, and a
+    saved PNG decoded at full size
+
+The harness can't hover a background window, so the card's buttons were checked
+through `:focus-within`, which shares the rule.
+
 ---
 
 ## 8. Building and signing
@@ -846,8 +920,24 @@ Verified on macOS unless noted. Windows passes all of these.
 - [ ] Dismiss and Snooze leave the control panel where it was, and don't take the
       keyboard from it when the card appears — fixed, to confirm (§7.5)
 
+**CQ Shotter** (§7.6)
+- [x] Title-bar switch: three tools, centred, clear of the traffic lights at
+      460 and 380 px; the last tool reopens at its height — WKWebView harness
+- [x] Watching: files already there ignored, tagged new files added newest
+      first, late tags, untagged and hidden files ignored, deleted files dropped
+      — unit tests
+- [x] List, copy, trash + Undo, Clear Shots + Undo, empty state, dark mode —
+      WKWebView harness
+- [x] Markup: pen, arrow, colours, sizes, Undo, Esc/Cancel; Done sends a
+      full-size PNG with the marks in it — WKWebView harness
+- [x] Saving over the original keeps the screen-capture tags and pixel density
+      — unit tests
+- [ ] In the installed app: the Desktop-access prompt, a real screenshot
+      appearing, copy and paste, Trash, Clear Shots and Undo, markup saved and still tagged
+      (`mdls -name kMDItemIsScreenCapture`)
+
 **Regression**
-- [x] `cargo test` passes — 44 tests on macOS, plus 4 `#[ignore]`d
+- [x] `cargo test` passes — 54 tests on macOS, plus 4 `#[ignore]`d
       live tests run with `cargo test -- --ignored`
 - [x] The **Windows** build still compiles — checked by CI
       (`.github/workflows/ci.yml`), which builds and tests both platforms on

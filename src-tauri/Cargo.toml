@@ -64,7 +64,13 @@ objc2-foundation = { version = "0.3", features = [
   # Reminder card: reading the on-screen window list.
   "NSDictionary",
   "NSValue",
+  # Shotter: moving a screenshot to the Trash.
+  "NSFileManager",
+  "NSError",
 ] }
+# Shotter: reading and copying a screenshot's extended attributes. Already built
+# for Tauri.
+libc = "0.2"
 # Local time for the reminder schedule. Already built for Tauri, with this
 # feature set, so it adds nothing to the build.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

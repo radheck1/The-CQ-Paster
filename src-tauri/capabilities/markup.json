@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "markup",
+  "description": "Shotter's markup window, which only exists on macOS",
+  "platforms": ["macOS"],
+  "windows": ["markup"],
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
+}
