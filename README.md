@@ -154,8 +154,8 @@ screenshots from the Screenshot app, the menu bar, or a mouse button.
 ## macOS
 
 Shipping as of **v0.6.0**, as a universal build (Apple Silicon and Intel). The
-Windows installer is still **v0.5.2**: everything 0.6.0 adds — Jotter, Shotter
-and the arrow-key folder switch — is macOS only.
+Windows installer is still **v0.5.2**: everything 0.6.0 adds — Jotter, Shotter,
+the arrow-key folder switch and shake to open — is macOS only.
 
 ### Installing
 
