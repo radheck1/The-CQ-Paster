@@ -113,6 +113,17 @@ its size and a note takes the place of the slots.
 
 Your slot hotkeys work inside a note, so ⌘+N+V pastes a slot straight in.
 
+## Shake to open (macOS)
+
+**Shake the mouse** and the control panel opens, on whichever tool you left it
+on. It's in the menu-bar menu under **Shake to open**, where you can switch it
+off or change how hard the shake has to be (high, medium or low sensitivity).
+
+Shaking while dragging does nothing, so throwing a window across the screen
+won't trigger it. macOS's own "shake to locate the pointer" still works too, so
+a shake both magnifies the pointer and opens CQ; turn that off in System
+Settings → Accessibility → Display if you'd rather it didn't.
+
 ## CQ Shotter (macOS)
 
 Your screenshots, in the same window. Pick **Shotter** in the title bar.
