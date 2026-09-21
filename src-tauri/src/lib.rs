@@ -14,6 +14,8 @@ mod jotter;
 #[cfg(target_os = "macos")]
 mod reminders;
 #[cfg(target_os = "macos")]
+mod shake;
+#[cfg(target_os = "macos")]
 mod shotter;
 mod permissions;
 mod slots;
@@ -444,12 +446,41 @@ fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::men
         MenuItemBuilder::with_id("clear", format!("Clear slots in \"{active_name}\"")).build(app)?;
     let quit_i = MenuItemBuilder::with_id("quit", "Quit CQ Paster").build(app)?;
 
+    // Shake the mouse to open the control panel. macOS only: it reads the mouse
+    // through an event tap of its own.
+    #[cfg(target_os = "macos")]
+    let shake_sub = {
+        let now = shake::settings();
+        let on_i = CheckMenuItemBuilder::with_id("shake:on", "Shake the mouse to open")
+            .checked(now.on)
+            .build(app)?;
+        let levels = [
+            ("shake:high", "Sensitivity: high", shake::Sensitivity::High),
+            ("shake:medium", "Sensitivity: medium", shake::Sensitivity::Medium),
+            ("shake:low", "Sensitivity: low", shake::Sensitivity::Low),
+        ];
+        let level_items = levels
+            .iter()
+            .map(|(id, label, level)| {
+                CheckMenuItemBuilder::with_id(*id, *label)
+                    .checked(now.sensitivity == *level)
+                    .enabled(now.on)
+                    .build(app)
+            })
+            .collect::<tauri::Result<Vec<_>>>()?;
+        let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&on_i];
+        items.extend(level_items.iter().map(|i| i as &dyn IsMenuItem<tauri::Wry>));
+        Submenu::with_items(app, "Shake to open", true, &items)?
+    };
+
     MenuBuilder::new(app)
         .items(&[
             &open_i,
             &folder_sub,
             #[cfg(not(target_os = "macos"))]
             &mode_i,
+            #[cfg(target_os = "macos")]
+            &shake_sub,
             &autostart_i,
             &clear_i,
             &quit_i,
@@ -493,6 +524,16 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
                         sync(app, &menu_state);
                     }
                 }
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(rest) = id.strip_prefix("shake:") {
+                if rest == "on" {
+                    shake::toggle();
+                } else {
+                    shake::set_sensitivity(rest);
+                }
+                refresh_tray(app, &menu_state); // re-reads the saved setting
                 return;
             }
             match id {
@@ -902,6 +943,10 @@ pub fn run() {
             // Shotter's watch on the screenshot folder.
             #[cfg(target_os = "macos")]
             shotter::start(app.handle());
+
+            // Shake the mouse to open the control panel.
+            #[cfg(target_os = "macos")]
+            shake::start(app.handle());
 
             // Main window: closing hides it instead of quitting the app.
             if let Some(main) = app.get_webview_window("main") {
