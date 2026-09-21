@@ -779,6 +779,48 @@ numbers, so a 5K screenshot doesn't become megabytes of text.
 The harness can't hover a background window, so the card's buttons were checked
 through `:focus-within`, which shares the rule.
 
+### 7.7 Shake to open
+
+Shaking the mouse opens the control panel. **macOS only.**
+
+**The thresholds come from a recording, not a guess.** A standalone recorder
+sampled the pointer at 100 Hz through 25 s of deliberate shaking and 60 s of
+ordinary work, and the detector was then tuned by replaying that file. What it
+showed:
+
+| | Turns inside 0.6 s | Peak speed |
+|---|---|---|
+| A deliberate shake | 9–10 | 9,000–15,000 pt/s |
+| The busiest second of ordinary use | 2 | — |
+
+The gap is wide enough that the exact numbers hardly matter: every speed between
+900 and 3200 pt/s gave the same answer. Two slices of that recording are the
+tests (`src/testdata/*.trace`): the real shake has to fire, the real ordinary use
+must not, at every sensitivity.
+
+**A shake is measured in any direction.** The first attempt counted sideways
+reversals only and missed a shake that was more diagonal than horizontal. A turn
+is now two fast strokes more than 135° apart, so orientation doesn't matter —
+which is also how macOS's own shake-to-locate behaves.
+
+**Its own tap, never the keyboard's.** A mouse can deliver a thousand events a
+second, and the keyboard tap is the one that suppresses the chord keys: if that
+one ever runs slow, macOS disables it and the hotkeys die (§5.1). This tap is
+listen-only, on its own thread, created with its own port. Switching the gesture
+off calls `CGEventTapEnable(port, false)`, so the callback isn't merely skipped —
+no events are delivered at all. Settings are read from atomics, never a lock.
+
+**Dragging is not shaking:** any drag event clears the detector, so throwing a
+window around can't open anything.
+
+**A trap worth remembering:** `last_fire` started at zero, which put the 2 s
+cooldown over the first two seconds after the tap started — a shake right after
+launch did nothing. It starts at negative infinity instead. The tests caught it
+because they replay from t = 0.
+
+Settings live in `shake.json` beside the others, and the menu-bar menu carries the
+switch and the three sensitivities.
+
 ---
 
 ## 8. Building and signing
@@ -976,8 +1018,15 @@ Verified on macOS unless noted. Windows passes all of these.
       `C`/`V` then use the new folder, and `⌘←` / `⌘→` still work in apps
       otherwise
 
+**Shake to open** (§7.7)
+- [x] A recorded shake fires at every sensitivity; a recorded minute of ordinary
+      use fires at none; dragging, a fast straight sweep and a slow wiggle never
+      fire; the cooldown holds — unit tests over recorded traces
+- [ ] In the installed app: shaking opens the panel, the menu switch and the
+      sensitivities take effect, and a day of ordinary work stays quiet
+
 **Regression**
-- [x] `cargo test` passes — 58 tests on macOS, plus 4 `#[ignore]`d
+- [x] `cargo test` passes — 66 tests on macOS, plus 4 `#[ignore]`d
       live tests run with `cargo test -- --ignored`
 - [x] The **Windows** build still compiles — checked by CI
       (`.github/workflows/ci.yml`), which builds and tests both platforms on
