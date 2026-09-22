@@ -36,6 +36,7 @@ independent set of 9.
 | Paste slot *N* as plain text | `Ctrl` + `Shift` + `<N>` + `V` | `⌘` + `Shift` + `<N>` + `V` |
 | Normal copy / paste | `Ctrl+C` / `Ctrl+V` (unchanged) | `⌘C` / `⌘V` (unchanged) |
 | Switch folder while the popup is up | — | `⌘` + `<N>`, then `←` / `→` |
+| Dictate | — | hold right `⌥`, speak, let go |
 
 `N` is `1`–`9`. **Press the digit before the letter** — hold `Ctrl`, tap `2`,
 tap `C` to store the selection in slot 2; later hold `Ctrl`, tap `2`, tap `V` to
@@ -149,6 +150,61 @@ Screenshots copied only to the clipboard (⌃⌘⇧4), or taken while cQ is quit
 don't appear. While cQ is running, ⌘⇧3/4/5 are taken by its hotkeys: take
 screenshots from the Screenshot app, the menu bar, or a mouse button.
 
+## Dictation (macOS)
+
+**Hold the right `⌥` key, say something, let go.** What you said is typed in
+wherever your cursor is. A small bar of waves appears beside the pointer while
+it listens, moving with what the microphone actually hears, and follows the
+pointer around.
+
+It all happens on your Mac. Your voice is never sent anywhere, there's no
+account and nothing to pay for.
+
+- **The first time**, cQ needs a 547 MB speech model. The menu-bar menu says
+  **Set up dictation…** until it has one; that window downloads it, and you can
+  stop and pick up where you left off. macOS asks for the microphone once.
+- **A quick tap of right `⌥` does nothing** — a hold has to last about
+  four-tenths of a second before anything is recorded, so brushing the key
+  can't start a dictation. Right `⌥` still works as a normal modifier.
+- **Every dictation is also kept**, word for word, in a jotpad called
+  **Dictations** — newest first. Nothing is lost if a transcript comes out
+  wrong or lands somewhere unexpected.
+- **Your clipboard survives.** cQ borrows it to paste and puts back what was
+  there, unless you copied something else in the meantime.
+
+### Words to expect
+
+The **Dictation…** window has a box for names cQ should expect to hear — one
+per line, up to 48. Put your jargon in it: product names, people, table and
+column names.
+
+It's worth more than spelling. Priming the model with `customer_id` and
+`created_at` also makes it write spoken "underscore" as a real underscore, put
+times as `3:30`, and use proper quotation marks — the words tell it what kind
+of text this is. There's a hard limit of 48 because past it the model silently
+drops part of the list; the count under the box turns red rather than letting
+that happen quietly.
+
+### Choosing a microphone
+
+Both the **Dictation** window and the menu-bar menu list every microphone.
+Leave it on **Follow the system default** and dictation follows your AirPods in
+and out. **Always use this microphone** pins one — and if that one isn't
+plugged in, cQ still records, off the default, and says so rather than
+quietly using the wrong microphone.
+
+### Worth knowing
+
+- **The first dictation after starting your Mac takes about 15 seconds** while
+  the model is read from disk. After that it's about a second. The engine stays
+  loaded, using around 0.8 GB.
+- **What you get is what you said** — the words are tidied for spelling and
+  punctuation, not rewritten. "Let's meet Tuesday, no, Wednesday" comes out as
+  you said it.
+- **Nothing is recorded unless the key is held.** The microphone opens when you
+  press and closes when you let go, and a recording stops on its own after five
+  minutes.
+
 ---
 
 ## macOS
@@ -184,10 +240,12 @@ the arrow-key folder switch and shake to open — is macOS only.
 | **Extra permissions** | None | **Accessibility** and **Input Monitoring** must be granted in System Settings → Privacy & Security, or the hotkeys cannot work |
 | **Under the hood** | Win32 clipboard + low-level keyboard hook | `NSPasteboard` + `CGEventTap` |
 | **Modes** | Master and Noob | None — the popup always shows, and the title bar switches to **CQ Jotter** and **CQ Shotter** |
+| **Dictation** | — | Hold right `⌥` to dictate, transcribed on the machine |
 
 Everything else — folders, the 9 slots, plain-text paste, slot persistence,
 start-on-login — is shared code and behaves identically. The slot store and most
-of the frontend are platform-independent; Jotter and Shotter are macOS-only for now.
+of the frontend are platform-independent; Jotter, Shotter and dictation are
+macOS-only for now.
 
 **The one thing macOS users must do that Windows users don't:** grant
 Accessibility **and** Input Monitoring. Both are required — with only the first,
@@ -216,7 +274,16 @@ src-tauri/
     hook.rs           # global keyboard grab + chord state machine + paste inject
     clipboard.rs      # raw snapshot/restore of all clipboard formats
     slots.rs          # SlotStore (9 slots) + FolderStore (folders)
+    dictate.rs        # macOS: dictation — the model download and the trigger
+    dictate/
+      engine.rs       #   the bundled whisper-server, and talking to it
+      capture.rs      #   the microphone, and choosing between them
+      vocab.rs        #   the words to prime the decoder with
+      indicator.rs    #   the listening mark beside the pointer
+  binaries/           # macOS: the speech engine (not in git — see scripts/)
   tauri.conf.json     # two windows: hidden "main" + frameless "popup"
+scripts/
+  build-whisper-server.sh   # builds the bundled speech engine
 MACOS_PORT.md         # handoff brief for the macOS port
 ```
 
@@ -234,6 +301,16 @@ runtime. On macOS, the Xcode Command Line Tools.
 npm install
 npm run tauri dev
 ```
+
+On macOS, dictation needs its engine built once before a bundle will include
+it. It is ~20 MB of binaries, kept out of git:
+
+```bash
+./scripts/build-whisper-server.sh
+```
+
+`npm run tauri dev` and `cargo test` work without it; only `npm run tauri
+build` needs it, and only for dictation.
 
 Run the tests:
 

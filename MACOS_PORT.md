@@ -822,6 +822,122 @@ because they replay from t = 0.
 Settings live in `shake.json` beside the others, and the menu-bar menu carries the
 switch and the three sensitivities.
 
+### 7.8 Dictation
+
+Hold the right `⌥` key, speak, let go: the audio is transcribed on the machine
+and pasted at the cursor. **macOS only.**
+
+**Right Option, because nothing else was available.** The spike that chose it
+logged every `flagsChanged` event the tap saw, behind a marker file, and the
+answer was decided by what the keyboard actually produced:
+
+| Key | Keycode | Result |
+|---|---|---|
+| Right `⌥` | `0x3D` | seen, and claimed by nothing |
+| Right `⌘` | `0x36` | seen, but `is_command_key` already matches it |
+| Right `⇧` | `0x3C` | seen, but a held Shift is worse to live with |
+| Right `⌃` | `0x3E` | **never arrives** — Apple laptops have no such key |
+| fn / 🌐 | `0x3F` | **never arrives** — consumed below a session tap |
+
+Seeing fn would mean moving CQ's tap to `kCGHIDEventTap`, changing the
+foundation of every existing hotkey to gain one key. The trigger reads its side
+from the flag word's device bit (`0x40`) rather than the keycode: right Option
+down is `0x00080140`, up is `0x00000100`. It is passed through, never swallowed
+— Option is a real modifier and holding it must still reach the app underneath.
+
+**The microphone opens on the press, and the threshold is applied on release.**
+Waiting to learn whether a hold was deliberate would clip the first word. 400 ms
+comes from the same recording: deliberate taps measured 127–282 ms, deliberate
+holds 2462–4727 ms.
+
+**The engine is a bundled executable, not a library.** `whisper-server` ships in
+`Contents/MacOS/` as an `externalBin` and is spoken to over loopback HTTP on a
+port the OS picks. That keeps C++ out of the Cargo build — Windows CI never sees
+it — isolates an inference crash from the clipboard manager it lives in, and
+lets the 0.8 GB the model occupies be released by ending a process. It is built
+by `scripts/build-whisper-server.sh` and is **not in git**: ~20 MB, and
+rebuilding whisper would add another copy to history each time. CI runs
+`cargo build` and `cargo test`, which never look at an `externalBin`.
+
+`GGML_NATIVE=OFF` is required in that script. Left on, ggml detects the host CPU
+and passes `-mcpu=apple-m4` into the x86_64 half of the universal build, which
+fails with *unknown target CPU*.
+
+**Two decoder flags are not adjustable, and both cost words when wrong.**
+
+| Flag | Effect if wrong |
+|---|---|
+| `-nt` (no timestamps) | **Never passed.** It dropped a whole sentence and garbled another on a 99-second recording — 155 words against 164 — identically every run. Timestamp tokens are part of how the decoder tracks position, and the returned text has no timestamps in it anyway. |
+| `-bs 5` (beam search) | **Always passed.** Greedy decoding dropped a sentence from the same recording. |
+
+Both are asserted in tests with the measurement in the failure message.
+
+**Nothing is resampled before the engine.** whisper.cpp decodes with miniaudio as
+`ma_decoder_config_init(ma_format_f32, channels, WHISPER_SAMPLE_RATE)`, which
+converts rate, format and channels itself; verified by sending it 48 kHz stereo
+— what a Mac microphone offers — and getting the same transcript as the 16 kHz
+mono original. A hand-rolled decimator would only be worse.
+
+**The vocabulary is worth more than spelling.** Whisper's initial prompt primes
+the decoder before it hears anything. Ten terms turned "created underscore at"
+into `created_at`, "customer ID" into `customer_id`, "3.30" into "3:30", and put
+real quotation marks around a quoted sentence — none of it asked for; the model
+infers the register from the words it is primed with. That is four of the seven
+jobs a local rewrite model was going to be needed for.
+
+It nearly got thrown away: the prompt took the transcript from 164 words to 152,
+which looks exactly like the `-nt` failure. It is the opposite — the words were
+compressed, not deleted, and the twelve are accounted for by five terms losing
+their spoken "underscore". **A word count rejects this improvement; only the
+diff shows what it is.**
+
+The budget is small and overflows silently: the prompt is capped at
+`min(n_max_text_ctx, n_text_ctx/2)` = 223 tokens, past which whisper keeps only
+the **last** 223 and says so in a log. Measured against the real model, 60 terms
+(589 chars) fit and 80 (786 chars) came to 298 tokens and were cut. The list is
+therefore capped at 48 in `vocab.rs`, where the window can show the count and
+turn red, rather than being trimmed where the loss is invisible.
+`carry_initial_prompt` is set, or the vocabulary primes only the first
+thirty-second window.
+
+**Timing, measured on an M4 Pro:** 0.4 s to start the engine warm, ~14.5 s the
+first time after a boot when 547 MB comes off disk, 0.6 s to transcribe five
+seconds of speech, 0.8 GB resident while loaded. The cold start is a page-cache
+effect, not engine overhead — the socket only opens once the model is loaded, so
+it is a valid readiness signal.
+
+**The listening mark must never become key.** `show()` goes through
+`makeKeyAndOrderFront:`, which activates CQ and takes focus off the app being
+dictated into — the Dismiss bug in §7.5 again. It is ordered in with
+`orderFrontRegardless` and made click-through with `setIgnoresMouseEvents:`. It
+follows the pointer at the popup's rate with the same generation counter, and
+does not move while the mouse is still, since `set_position` is marshalled to
+the main thread.
+
+**A trap worth remembering:** the mark never appeared at all in its first
+version, and the beachball said why. A synchronous Tauri command runs on the
+main thread, and the command driving it slept for the length of the recording;
+showing the mark queues `orderFrontRegardless` onto that same thread, so it only
+got its turn after the recording had been put away. Anything that sleeps belongs
+on a thread of its own with the result delivered as an event.
+
+**Pasting borrows the pasteboard and hands it back**, exactly as a chord paste
+does, and only if nothing else claimed it meanwhile. It raises the tap's
+`injecting` guard, which now has a handle outside the worker because
+transcription cannot be done on the worker thread.
+
+**Every transcript is also written to a jotpad**, verbatim, because the pasted
+copy was otherwise the only one. That pad is a new *plain* kind — no depth, no
+crossing off — and is permanent for the same reason the home folder is:
+something writes to it without asking. The control panel does the writing, not
+Rust: it owns `jotter.json`, and an append behind its back would be saved over
+by whatever the editor next wrote.
+
+`Info.plist` carries `NSMicrophoneUsageDescription` and `Entitlements.plist`
+carries `com.apple.security.device.audio-input`. Both halves are needed: the
+string is what macOS shows, the entitlement is what the hardened runtime
+requires before the access is allowed at all.
+
 ---
 
 ## 8. Building and signing
@@ -1035,6 +1151,33 @@ Verified on macOS unless noted. Windows passes all of these.
       toolchain), so before CI existed the guarantee rested on `cfg` discipline
       alone.
 
+**Dictation (§7.8)**
+- [x] Hold right `⌥`, speak, let go — text lands at the cursor
+- [x] Hold duration matches what is captured — 1529/1999/5027 ms gave 1.5/2.0/5.0 s
+- [x] The model downloads, verifies against its published SHA-256, and the tray
+      relabels itself when it lands
+- [x] The listening mark appears beside the pointer, follows it, and tracks the
+      voice rather than animating on its own
+- [x] The vocabulary reaches the decoder — spoken "underscore" comes through as
+      one, confirmed on the user's own speech
+- [x] Every transcript is written to the Dictations jotpad, flat, newest first
+- [x] Other jotpads keep their bullets and crossing off
+- [x] The microphone list shows real devices; the chosen one is used and logged
+- [ ] **A quick tap of right `⌥` records nothing** — the 400 ms threshold is
+      unit-tested against measured hold times, not checked by hand
+- [ ] **`⌥` plus a letter still types its special character** while dictation is
+      installed — the trigger is passed through, but this was not re-checked
+- [ ] **The clipboard survives a dictation** — the borrow-and-hand-back path is
+      shared with chord paste but has not been exercised here by hand
+- [ ] **A locked microphone that is unplugged** falls back and says so
+- [ ] Resume a half-finished model download — the curl path was verified
+      standalone, never through the app
+- [ ] A dictation longer than one 30-second window, to confirm
+      `carry_initial_prompt` keeps the vocabulary alive throughout
+- [ ] Dictating into a password field, or any app that refuses a paste
+- [ ] **A day of ordinary work** with the trigger live, to find out whether
+      right `⌥` collides with anything in practice
+
 ---
 
 ## 10. Still open
@@ -1052,3 +1195,17 @@ Verified on macOS unless noted. Windows passes all of these.
   the `IS_MAC` checks around the switch lifted, and a look on a real Windows
   machine. Reminders would need a Windows card window, sound and tray badge.
 - Confirm the reminder card hands focus back after Dismiss or Snooze (§7.5).
+- **Dictation's rewrite step.** The vocabulary prompt absorbed four of the seven
+  jobs a local rewrite model was for (§7.8). What is left — applying a spoken
+  self-correction, dropping filler, turning a spoken list into bullets — needs a
+  4.7 GB model and a second or two per dictation. Measured with Qwen2.5-7B
+  Q4_K_M: 20/20 on a scored rewrite against 16–17/20 for the 3B, which also
+  carries a non-commercial licence. Worth deciding rather than assuming.
+- **Dictation's vocabulary could gather itself.** The terms are already in CQ —
+  in the clipboard slots and the jotpads — so candidates could be harvested and
+  offered for approval rather than typed. The 48-term budget means any such list
+  must rank and evict, not accumulate.
+- **`whisper-server` is bundled but unversioned.** Nothing records which
+  whisper.cpp commit produced the binary in `src-tauri/binaries/`.
+- **`diagnostics.log` never rotates.** The tap watchdog writes a line every ten
+  seconds — about 8,600 a day — and the file had reached 30 MB during this work.
