@@ -37,6 +37,7 @@ independent set of 9.
 | Normal copy / paste | `Ctrl+C` / `Ctrl+V` (unchanged) | `⌘C` / `⌘V` (unchanged) |
 | Switch folder while the popup is up | — | `⌘` + `<N>`, then `←` / `→` |
 | Dictate | — | hold right `⌥`, speak, let go |
+| Dictate without tidying it up | — | hold right `⌥` + `Shift` |
 
 `N` is `1`–`9`. **Press the digit before the letter** — hold `Ctrl`, tap `2`,
 tap `C` to store the selection in slot 2; later hold `Ctrl`, tap `2`, tap `V` to
@@ -153,9 +154,16 @@ screenshots from the Screenshot app, the menu bar, or a mouse button.
 ## Dictation (macOS)
 
 **Hold the right `⌥` key, say something, let go.** What you said is typed in
-wherever your cursor is. A small bar of waves appears beside the pointer while
-it listens, moving with what the microphone actually hears, and follows the
-pointer around.
+wherever your cursor is, tidied up: if you correct yourself mid-sentence, only
+the corrected version is kept, and "um" and "like" go. A small bar of waves
+appears beside the pointer while it listens, moving with what the microphone
+actually hears, and follows the pointer around.
+
+> Said: "Let's do the review on Monday. No, wait, Monday's the holiday. Let's
+> do Tuesday at 2:00. Actually, 2:30."
+> Typed: **"Let's do Tuesday at 2:30."**
+
+**Hold `Shift` as well** and you get exactly what you said, untouched.
 
 It all happens on your Mac. Your voice is never sent anywhere, there's no
 account and nothing to pay for.
@@ -163,6 +171,9 @@ account and nothing to pay for.
 - **The first time**, cQ needs a 547 MB speech model. The menu-bar menu says
   **Set up dictation…** until it has one; that window downloads it, and you can
   stop and pick up where you left off. macOS asks for the microphone once.
+- **A second model, 4.7 GB, does the tidying up.** It's optional — dictation
+  works without it and types what you said, as you said it. It's downloaded
+  from the same window.
 - **A quick tap of right `⌥` does nothing** — a hold has to last about
   four-tenths of a second before anything is recorded, so brushing the key
   can't start a dictation. Right `⌥` still works as a normal modifier.
@@ -195,12 +206,16 @@ quietly using the wrong microphone.
 
 ### Worth knowing
 
-- **The first dictation after starting your Mac takes about 15 seconds** while
-  the model is read from disk. After that it's about a second. The engine stays
-  loaded, using around 0.8 GB.
-- **What you get is what you said** — the words are tidied for spelling and
-  punctuation, not rewritten. "Let's meet Tuesday, no, Wednesday" comes out as
-  you said it.
+- **The first dictation after starting your Mac is slow** — about 15 seconds
+  while the models are read from disk. After that it's about a second.
+- **It only ever removes words, never invents them.** cQ checks that before
+  typing anything: if the tidied version contains something you didn't say, or
+  has lost too much of what you did say, you get your own words instead. Either
+  way the exact transcript is in the **Dictations** jotpad.
+- **The tidying model is released after ten idle minutes**, giving back about
+  6 GB. The next dictation reloads it while you're still speaking — though if
+  it hasn't finished loading within four seconds, that one is typed as you said
+  it rather than keeping you waiting.
 - **Nothing is recorded unless the key is held.** The microphone opens when you
   press and closes when you let go, and a recording stops on its own after five
   minutes.

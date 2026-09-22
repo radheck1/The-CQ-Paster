@@ -941,6 +941,51 @@ something writes to it without asking. The control panel does the writing, not
 Rust: it owns `jotter.json`, and an append behind its back would be saved over
 by whatever the editor next wrote.
 
+### Cleaning up what was said
+
+A second sidecar, `llama-server`, rewrites the transcript before it is pasted;
+right `⌥` + `Shift` skips it. It makes two edits and no others — a spoken
+self-correction keeps only the corrected version, and filler goes. Everything
+else is the vocabulary prompt's work already, and asking twice would only add
+risk.
+
+**Qwen2.5-7B-Instruct Q4_K_M**, Apache 2.0, 4.7 GB, ~6 GB resident. The 3B was
+tried and rejected: 5/8 against the 7B's 8/8 on the same corpus, emitting
+invalid bytes and deleting words, and non-commercially licensed besides.
+
+**The cost is not what the first spike suggested.** That measured a 99-second
+dictation — 555 tokens in, 222 out. A real dictation is a sentence, and
+generation is proportional to output: ten tokens is 208 ms. Measured on three
+dictations read aloud: 427–882 ms each, all three correct.
+
+`cache_prompt` is on, so the 160-token instruction is evaluated once and is 17
+tokens thereafter — 649 ms for the first rewrite after launch, 244–400 ms
+after. The engine is started and the instruction pre-warmed when the trigger
+goes **down**, so both happen while the user is still speaking. Generation
+cannot be overlapped: a correction is only knowable once the sentence ends.
+
+**The guard, and why a single threshold was wrong.** The instruction forbids
+rewording, so the model can only delete, which makes the output checkable. The
+first version rejected any word that was not in the transcript and required
+half the words to survive. Both failed on real speech:
+
+| Seen | Why the first guard was wrong |
+|---|---|
+| `Invented("the")` | A joining word cannot change what a sentence says. Removing a correction sometimes needs one back. |
+| `TooShort { kept: 5, had: 18 }` | Two false starts, and the model's answer — "Let's do Tuesday at 2:30." — was right. The guard destroyed it and pasted the stumbling version. |
+
+So: joining words may be added, and the size floor depends on whether the
+speaker corrected themselves — 20% with a correction marker present, 70%
+without, since without one nothing should be leaving but filler. The measured
+sentence-dropping failure has no marker and is still caught. Both cases are
+fixtures.
+
+**Idle.** The engine exits after ten unused minutes and gives back its memory.
+The reload starts on key-down, but that only hides it when the model file is
+still in the page cache — 1.1 s against 17.5 s cold. A dictation therefore
+waits four seconds and then pastes as heard: a 17-second pause mid-sentence is
+worse than an untidied sentence.
+
 `Info.plist` carries `NSMicrophoneUsageDescription` and `Entitlements.plist`
 carries `com.apple.security.device.audio-input`. Both halves are needed: the
 string is what macOS shows, the entitlement is what the hardened runtime
@@ -1183,8 +1228,16 @@ Verified on macOS unless noted. Windows passes all of these.
 - [ ] A dictation longer than one 30-second window, to confirm
       `carry_initial_prompt` keeps the vocabulary alive throughout
 - [ ] Dictating into a password field, or any app that refuses a paste
+- [x] The rewrite resolves a self-correction, leaves finished text alone, and
+      handles two false starts in a row — read aloud, 427–882 ms each
+- [x] The guard rejects a rewrite and pastes the transcript instead
 - [ ] **A day of ordinary work** with the trigger live, to find out whether
       right `⌥` collides with anything in practice
+- [ ] **The idle timeout actually firing**, and the memory coming back. The
+      wiring is verified; ten minutes of waiting is not
+- [ ] **A dictation that both corrects itself and loses a sentence.** With a
+      correction marker present the guard allows a large cut, so this is the
+      case it can no longer catch — the jotpad is the only recovery
 
 ---
 
@@ -1203,12 +1256,11 @@ Verified on macOS unless noted. Windows passes all of these.
   the `IS_MAC` checks around the switch lifted, and a look on a real Windows
   machine. Reminders would need a Windows card window, sound and tray badge.
 - Confirm the reminder card hands focus back after Dismiss or Snooze (§7.5).
-- **Dictation's rewrite step.** The vocabulary prompt absorbed four of the seven
-  jobs a local rewrite model was for (§7.8). What is left — applying a spoken
-  self-correction, dropping filler, turning a spoken list into bullets — needs a
-  4.7 GB model and a second or two per dictation. Measured with Qwen2.5-7B
-  Q4_K_M: 20/20 on a scored rewrite against 16–17/20 for the 3B, which also
-  carries a non-commercial licence. Worth deciding rather than assuming.
+- **Is corrections-only enough?** The rewrite deliberately may not reword, which
+  is what makes its output checkable. If that turns out to be less than expected
+  — grammar, rambling sentences — loosening the instruction is one line, but the
+  guard stops working, because legitimate output would no longer have to come
+  from the input.
 - **Dictation's vocabulary could gather itself.** The terms are already in CQ —
   in the clipboard slots and the jotpads — so candidates could be harvested and
   offered for approval rather than typed. The 48-term budget means any such list
