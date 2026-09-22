@@ -17,6 +17,10 @@
 //! a truncated model is worse than no model, because it fails at the point of
 //! use rather than at the point of download.
 
+pub mod capture;
+pub mod engine;
+pub mod indicator;
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,6 +59,14 @@ pub const MODELS: &[ModelSpec] = &[ModelSpec {
     sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
     bytes: 574_041_195,
 }];
+
+/// Where a model by id ended up, whether or not it has been downloaded.
+pub fn model_path(id: &str) -> Option<PathBuf> {
+    MODELS
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| models_dir().join(m.file))
+}
 
 pub fn models_dir() -> PathBuf {
     crate::data_dir().join("models")
@@ -412,6 +424,272 @@ pub fn dictate_open(app: AppHandle) {
     open_window(&app);
 }
 
+/// Where a recording is written before it is handed to the engine. One file,
+/// reused: a dictation is transcribed and done with, and keeping the audio
+/// around would be a recording of the user that nobody asked for.
+pub fn scratch_wav() -> PathBuf {
+    crate::data_dir().join("dictation.wav")
+}
+
+/// What the end-to-end check heard, sent as an event rather than returned.
+#[derive(Clone, Serialize)]
+struct Heard {
+    text: Option<String>,
+    error: Option<String>,
+}
+
+/// Record for a few seconds and transcribe it, so the microphone, the WAV and
+/// the engine can be checked end to end before the trigger exists.
+///
+/// The work happens on a thread of its own and the result arrives as an event.
+/// A synchronous Tauri command runs on the main thread, and this one sleeps for
+/// the length of the recording: done inline it beachballs the whole app, and —
+/// worse — the listening mark never appears, because showing it queues
+/// `orderFrontRegardless` onto the very thread the sleep is holding. The mark
+/// only got its turn after the recording had already been put away.
+#[tauri::command]
+pub fn dictate_try(app: AppHandle, seconds: f64) {
+    std::thread::spawn(move || {
+        let outcome = run_try(&app, seconds);
+        let _ = app.emit_to(
+            WINDOW,
+            "dictate-heard",
+            match outcome {
+                Ok(text) => Heard { text: Some(text), error: None },
+                Err(error) => Heard { text: None, error: Some(error) },
+            },
+        );
+    });
+}
+
+fn run_try(app: &AppHandle, seconds: f64) -> Result<String, String> {
+    // The mark goes up before the microphone opens, so there is something to
+    // see during the moment the device takes to start.
+    let at = crate::hook::cursor_point();
+    indicator::show(app, at);
+    let pumping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    indicator::follow(app.clone(), pumping.clone());
+    let _ = app.emit_to(WINDOW, "dictate-listening", true);
+
+    let done = |p: &std::sync::Arc<std::sync::atomic::AtomicBool>| {
+        p.store(false, std::sync::atomic::Ordering::SeqCst);
+        indicator::hide(app);
+    };
+
+    match capture::start() {
+        Err(e) => {
+            done(&pumping);
+            let _ = app.emit_to(WINDOW, "dictate-listening", false);
+            return Err(e);
+        }
+        Ok(started) => {
+            crate::diag(&format!(
+                "dictate: recording with \"{}\"{}",
+                started.device,
+                match &started.instead_of {
+                    Some(missing) => format!(" (instead of \"{missing}\", not connected)"),
+                    None => String::new(),
+                }
+            ));
+            // The window says which microphone was actually used, so a locked
+            // one being absent is visible rather than only in the transcript.
+            let _ = app.emit_to(WINDOW, "dictate-using", started);
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_secs_f64(seconds.clamp(0.5, 30.0)));
+    done(&pumping);
+    let _ = app.emit_to(WINDOW, "dictate-listening", false);
+
+    let Some(wav) = capture::stop(&scratch_wav())? else {
+        return Err("nothing was recorded".into());
+    };
+    let began = std::time::Instant::now();
+    let text = engine::transcribe(&wav)?;
+    crate::diag(&format!(
+        "dictate: transcribed in {:.1}s: {} chars",
+        began.elapsed().as_secs_f32(),
+        text.len()
+    ));
+    let _ = std::fs::remove_file(&wav);
+    if text.is_empty() {
+        return Err("nothing was said, or the microphone heard nothing".into());
+    }
+    Ok(text)
+}
+
+/// A hold shorter than this is a brush against the key, not an intention to
+/// speak. Measured on this machine: deliberate taps came in at 134-282 ms and
+/// deliberate holds at 2462-4727 ms, so the gap is wide and this sits in it.
+pub const MIN_HOLD: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// The trigger went down. Opens the microphone at once — the threshold is
+/// applied on release, so that the start of a sentence is not clipped while
+/// waiting to find out whether the hold was deliberate.
+pub fn begin(app: &AppHandle, at: (f64, f64)) {
+    if !ready() {
+        crate::diag("dictate: trigger held, but the speech model is not downloaded");
+        return;
+    }
+    indicator::show(app, at);
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    *FOLLOWING.lock().unwrap() = Some(running.clone());
+    indicator::follow(app.clone(), running);
+    if let Err(e) = capture::start() {
+        crate::diag(&format!("dictate: could not start listening: {e}"));
+        end_indicator(app);
+    }
+}
+
+/// The trigger came up. Transcribes and pastes, on a thread of its own: this
+/// is called from the hook's worker, which must not be held for the second or
+/// two that transcription takes.
+pub fn end(app: &AppHandle, held: std::time::Duration) {
+    end_indicator(app);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let short = held < MIN_HOLD;
+        match capture::stop(&scratch_wav()) {
+            Ok(Some(wav)) => {
+                if short {
+                    crate::diag(&format!(
+                        "dictate: held {} ms — too short, discarded",
+                        held.as_millis()
+                    ));
+                    let _ = std::fs::remove_file(&wav);
+                    return;
+                }
+                let began = std::time::Instant::now();
+                match engine::transcribe(&wav) {
+                    Ok(text) if !text.is_empty() => {
+                        crate::diag(&format!(
+                            "dictate: transcribed in {:.1}s: {} chars, pasting",
+                            began.elapsed().as_secs_f32(),
+                            text.len()
+                        ));
+                        crate::hook::paste_text(&text);
+                    }
+                    Ok(_) => crate::diag("dictate: nothing was heard"),
+                    Err(e) => crate::diag(&format!("dictate: {e}")),
+                }
+                let _ = std::fs::remove_file(&wav);
+            }
+            Ok(None) => {}
+            Err(e) => crate::diag(&format!("dictate: {e}")),
+        }
+    });
+}
+
+/// The follower for the recording in progress, so a release can retire it.
+static FOLLOWING: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+    Mutex::new(None);
+
+fn end_indicator(app: &AppHandle) {
+    if let Some(f) = FOLLOWING.lock().unwrap().take() {
+        f.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    indicator::hide(app);
+}
+
+/// Every microphone on this Mac, and which one dictation will use.
+#[derive(Serialize)]
+pub struct Mics {
+    devices: Vec<capture::MicInfo>,
+    /// The chosen device's id, or `None` for "follow the system default".
+    chosen: Option<String>,
+    locked: bool,
+}
+
+#[tauri::command]
+pub fn dictate_mics() -> Mics {
+    let c = capture::choice();
+    Mics {
+        devices: capture::devices(),
+        chosen: c.device,
+        locked: c.locked,
+    }
+}
+
+/// Choose a microphone. `device` of `None` means follow the system default,
+/// which is what CQ does until told otherwise.
+#[tauri::command]
+pub fn dictate_set_mic(device: Option<String>, locked: bool) -> Result<(), String> {
+    let name = device.as_deref().and_then(|id| {
+        capture::devices()
+            .into_iter()
+            .find(|d| d.id == id)
+            .map(|d| d.name)
+    });
+    capture::set_choice(&capture::MicChoice { device, name, locked })
+}
+
+/// One microphone, as the tray menu needs it: already labelled, because a
+/// menu cannot work out for itself that two devices share a name.
+pub struct MicMenuItem {
+    pub id: String,
+    pub label: String,
+}
+
+pub struct MicMenu {
+    pub devices: Vec<MicMenuItem>,
+    pub chosen: Option<String>,
+    pub locked: bool,
+}
+
+/// The microphone list for the tray. Labels match the window's: the maker is
+/// added only where two devices would otherwise read identically, and the
+/// system default is marked.
+pub fn mic_menu() -> MicMenu {
+    let all = capture::devices();
+    let devices = all
+        .iter()
+        .map(|m| {
+            let shared = all.iter().filter(|o| o.name == m.name).count() > 1;
+            let base = match (shared, m.maker.as_deref()) {
+                (true, Some(maker)) => format!("{} ({maker})", m.name),
+                _ => m.name.clone(),
+            };
+            MicMenuItem {
+                id: m.id.clone(),
+                label: if m.is_default {
+                    format!("{base} \u{2014} system default")
+                } else {
+                    base
+                },
+            }
+        })
+        .collect();
+    let c = capture::choice();
+    MicMenu { devices, chosen: c.device, locked: c.locked }
+}
+
+/// Act on a tray choice. `id` is the device id, or empty for "follow the
+/// system default".
+pub fn choose_mic(id: &str) -> Result<(), String> {
+    let device = if id.is_empty() { None } else { Some(id.to_string()) };
+    let name = device.as_deref().and_then(|d| {
+        capture::devices().into_iter().find(|m| m.id == d).map(|m| m.name)
+    });
+    // Following the system default and locking contradict each other, so
+    // choosing it releases the lock rather than leaving it set on nothing.
+    let locked = device.is_some() && capture::choice().locked;
+    capture::set_choice(&capture::MicChoice { device, name, locked })
+}
+
+pub fn toggle_mic_lock() -> Result<(), String> {
+    let mut c = capture::choice();
+    if c.device.is_none() {
+        return Ok(()); // nothing to lock to
+    }
+    c.locked = !c.locked;
+    capture::set_choice(&c)
+}
+
+/// Let go of the engine and the memory its model occupies.
+#[tauri::command]
+pub fn dictate_release() {
+    engine::stop();
+}
+
 #[tauri::command]
 pub fn dictate_models() -> Vec<ModelStatus> {
     status()
@@ -442,6 +720,28 @@ pub fn dictate_cancel() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The threshold that separates a brush against the key from an intention
+    /// to speak, taken from what this keyboard actually produced.
+    #[test]
+    fn the_hold_threshold_sits_between_a_tap_and_a_hold() {
+        use std::time::Duration;
+        // Deliberate taps, measured: right Cmd 282 ms, right Shift 161 ms,
+        // right Option 134 ms, left Option 127 ms.
+        for tap in [127, 134, 161, 282] {
+            assert!(
+                Duration::from_millis(tap) < MIN_HOLD,
+                "{tap} ms was a deliberate tap and must not dictate"
+            );
+        }
+        // Deliberate holds, measured on the same keyboard.
+        for hold in [2462, 4725, 4727] {
+            assert!(
+                Duration::from_millis(hold) > MIN_HOLD,
+                "{hold} ms was a deliberate hold and must dictate"
+            );
+        }
+    }
 
     #[test]
     fn the_model_table_is_sane() {

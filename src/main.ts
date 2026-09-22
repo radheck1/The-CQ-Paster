@@ -6,6 +6,7 @@ import * as reminders from "./reminders";
 import * as shotter from "./shotter";
 import * as markup from "./markup";
 import * as dictate from "./dictate";
+import * as listening from "./listening";
 
 type Preview = {
   kind: "text" | "image" | "files" | "other";
@@ -1052,6 +1053,11 @@ async function boot() {
   // macOS: the dictation setup window, which fetches the speech model.
   if (label === "dictate") {
     await dictate.start(app);
+    return;
+  }
+  // macOS: the small mark beside the pointer while dictation listens.
+  if (label === "listening") {
+    await listening.start(app);
     return;
   }
   // Re-fit the control panel whenever it's opened/focused, so it can't flash at

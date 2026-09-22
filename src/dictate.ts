@@ -19,6 +19,9 @@ type ModelStatus = {
   downloaded: number;
 };
 
+type MicInfo = { id: string; name: string; maker: string | null; is_default: boolean };
+type Mics = { devices: MicInfo[]; chosen: string | null; locked: boolean };
+
 type Progress = {
   id: string;
   label: string;
@@ -33,6 +36,13 @@ let models: ModelStatus[] = [];
 /** The last progress seen per model, so a redraw doesn't lose the bar. */
 const live = new Map<string, Progress>();
 let busy = false;
+/** The end-to-end check: what it is doing, and what came back. */
+let trying: "idle" | "listening" | "thinking" = "idle";
+let heard: string | null = null;
+let heardError: string | null = null;
+let mics: Mics = { devices: [], chosen: null, locked: false };
+/** Set when a locked microphone was missing and CQ recorded off another. */
+let substituted: string | null = null;
 
 /** Sizes here are hundreds of megabytes, so one decimal place is plenty. */
 export function size(bytes: number): string {
@@ -45,6 +55,17 @@ export function size(bytes: number): string {
 export function percent(done: number, total: number): number {
   if (total <= 0) return 0;
   return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+}
+
+/**
+ * What to call a device in the list. Two microphones can share a name — a pair
+ * of identical USB interfaces, say — so the maker is added when it would tell
+ * them apart, and left off when it would just be noise.
+ */
+export function micLabel(m: MicInfo, all: MicInfo[]): string {
+  const sameName = all.filter((o) => o.name === m.name).length > 1;
+  const base = sameName && m.maker ? `${m.name} (${m.maker})` : m.name;
+  return m.is_default ? `${base} — system default` : base;
 }
 
 /** The line under each model's name. Pure, so the wording can be tested. */
@@ -117,6 +138,52 @@ function render() {
                  }</button>`
         }
       </div>
+      ${
+        allDone
+          ? `<div class="dc-mic">
+               <label class="dc-mic-row">
+                 <span class="dc-mic-label">Microphone</span>
+                 <select id="dc-mic" class="dc-select">
+                   <option value="">Follow the system default</option>
+                   ${mics.devices
+                     .map(
+                       (m) =>
+                         `<option value="${m.id}"${m.id === mics.chosen ? " selected" : ""}>${micLabel(m, mics.devices)}</option>`,
+                     )
+                     .join("")}
+                 </select>
+               </label>
+               <label class="dc-mic-lock${mics.chosen ? "" : " off"}">
+                 <input type="checkbox" id="dc-lock" ${mics.locked ? "checked" : ""} ${mics.chosen ? "" : "disabled"} />
+                 <span>Always use this microphone</span>
+               </label>
+               ${
+                 substituted
+                   ? `<p class="dc-sub">Recorded with a different microphone — ${substituted} was not connected.</p>`
+                   : ""
+               }
+             </div>
+             <div class="dc-try">
+               <button class="dc-btn" id="dc-try" ${trying === "idle" ? "" : "disabled"}>
+                 ${trying === "listening" ? "Listening…" : trying === "thinking" ? "Transcribing…" : "Test the microphone"}
+               </button>
+               <span class="dc-try-hint">${
+                 trying === "listening"
+                   ? "Say something — five seconds."
+                   : trying === "thinking"
+                     ? "Running it through the engine."
+                     : "Records five seconds and transcribes it here."
+               }</span>
+             </div>
+             ${
+               heardError
+                 ? `<p class="dc-heard error">${heardError}</p>`
+                 : heard !== null
+                   ? `<p class="dc-heard">${heard || "(nothing was heard)"}</p>`
+                   : ""
+             }`
+          : ""
+      }
       <p class="dc-foot">
         ${
           allDone
@@ -135,6 +202,34 @@ function render() {
   root.querySelector<HTMLButtonElement>("#dc-cancel")?.addEventListener("click", () => {
     void invoke("dictate_cancel");
   });
+  root.querySelector<HTMLSelectElement>("#dc-mic")?.addEventListener("change", async (e) => {
+    const id = (e.target as HTMLSelectElement).value || null;
+    // Following the system default and locking are contradictory, so choosing
+    // "follow the default" releases the lock rather than leaving it set on
+    // nothing.
+    const locked = id ? mics.locked : false;
+    await invoke("dictate_set_mic", { device: id, locked });
+    mics = await invoke<Mics>("dictate_mics");
+    render();
+  });
+  root.querySelector<HTMLInputElement>("#dc-lock")?.addEventListener("change", async (e) => {
+    await invoke("dictate_set_mic", {
+      device: mics.chosen,
+      locked: (e.target as HTMLInputElement).checked,
+    });
+    mics = await invoke<Mics>("dictate_mics");
+    render();
+  });
+  root.querySelector<HTMLButtonElement>("#dc-try")?.addEventListener("click", () => {
+    trying = "listening";
+    heard = null;
+    heardError = null;
+    render();
+    // Returns at once; the result arrives as `dictate-heard`. It cannot be
+    // awaited, because the command must not hold the main thread for the
+    // length of a recording.
+    void invoke("dictate_try", { seconds: 5 });
+  });
   root.querySelector<HTMLButtonElement>("#dc-close")?.addEventListener("click", () => {
     // Through Rust: the web view is not granted `allow-close`, so closing its
     // own window from here is refused by the ACL and does nothing at all.
@@ -144,12 +239,31 @@ function render() {
 
 async function refresh() {
   models = await invoke<ModelStatus[]>("dictate_models");
+  // Re-read every time: microphones come and go while the window is open.
+  try {
+    mics = await invoke<Mics>("dictate_mics");
+  } catch {
+    mics = { devices: [], chosen: null, locked: false };
+  }
   render();
 }
 
 export async function start(app: HTMLElement) {
   root = app;
   await refresh();
+  await listen<{ device: string; instead_of: string | null }>("dictate-using", ({ payload }) => {
+    substituted = payload.instead_of;
+  });
+  await listen<{ text: string | null; error: string | null }>("dictate-heard", ({ payload }) => {
+    heard = payload.text;
+    heardError = payload.error;
+    trying = "idle";
+    render();
+  });
+  await listen<boolean>("dictate-listening", ({ payload }) => {
+    trying = payload ? "listening" : "thinking";
+    render();
+  });
   await listen<Progress>("dictate-progress", async ({ payload }) => {
     live.set(payload.id, payload);
     if (payload.state === "done" || payload.state === "failed" || payload.state === "cancelled") {

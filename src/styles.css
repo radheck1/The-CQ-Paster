@@ -2106,3 +2106,151 @@ body[data-window="dictate"] #app {
     animation: none;
   }
 }
+
+.dc-try {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.dc-try-hint {
+  font-size: 11px;
+  color: var(--empty);
+  line-height: 1.3;
+}
+
+.dc-btn:disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* What the microphone actually heard, shown verbatim — the point of the check
+   is to see the engine's own words, not a tidied version of them. */
+.dc-heard {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--panel-2);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.dc-heard.error {
+  background: transparent;
+  padding: 0;
+  color: var(--danger);
+}
+
+/* ---- The dictation listening mark (macOS only) -------------------------- */
+
+/* The window is transparent, so only the pill is drawn. Sized to match WIDTH
+   and HEIGHT in indicator.rs. */
+body[data-window="listening"] {
+  background: transparent;
+  margin: 0;
+  overflow: hidden;
+}
+
+body[data-window="listening"] #app {
+  width: 100vw;
+  height: 100vh;
+}
+
+/* No pill: the bars are the whole mark, so it reads as an annotation on the
+   pointer rather than a small window following it. Sized to WIDTH and HEIGHT
+   in indicator.rs. */
+.dl-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2.4px;
+  /* Nothing here should ever take a click; Rust also sets the window
+     click-through, and this is the belt to that braces. */
+  pointer-events: none;
+}
+
+.dl-bar {
+  width: 2.4px;
+  height: 14px;
+  border-radius: 1.2px;
+  background: #2b2d31;
+  /* Dark bars on a dark desktop would vanish, and there is no pill behind
+     them to sit on. A pale halo — not a drop shadow — is what keeps them
+     readable over a dark window; over a light one it is invisible and the
+     grey does the work on its own. */
+  box-shadow: 0 0 2.5px rgba(255, 255, 255, 0.75);
+  transform: scaleY(0.22);
+  transform-origin: center;
+  will-change: transform;
+}
+
+/* The mark is a voice meter: if motion is unwelcome, the bars hold still and
+   the pill alone says that CQ is listening. */
+@media (prefers-reduced-motion: reduce) {
+  .dl-bar {
+    transform: scaleY(0.6) !important;
+  }
+}
+
+.dc-mic {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.dc-mic-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dc-mic-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 0 0 auto;
+}
+
+.dc-select {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.dc-mic-lock {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* Locking is meaningless while following the system default, so it reads as
+   unavailable rather than silently doing nothing. */
+.dc-mic-lock.off {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dc-sub {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger);
+}

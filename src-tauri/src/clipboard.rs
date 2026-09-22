@@ -21,10 +21,11 @@ pub use macos::{
     text_only,
 };
 // ClipItem/ClipType are re-exported for `slots.rs`'s test helpers, which build
-// a snapshot directly; only ClipSnapshot is needed by non-test code.
+// a snapshot directly, and for dictation, which builds a plain-text snapshot
+// to paste; only ClipSnapshot is needed by the rest of the non-test code.
 #[cfg(target_os = "macos")]
 #[allow(unused_imports)]
-pub use macos::{ClipItem, ClipSnapshot, ClipType};
+pub use macos::{ClipItem, ClipSnapshot, ClipType, UTI_TEXT};
 
 /// One clipboard format: the Windows format id and its raw bytes.
 #[cfg(not(target_os = "macos"))]

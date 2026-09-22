@@ -98,6 +98,17 @@ const KCG_EVENT_SOURCE_HID_SYSTEM_STATE: i32 = 1;
 
 // Modifier flag masks and the keycode field id.
 const KCG_FLAG_MASK_SHIFT: u64 = 0x0002_0000;
+/// Right Option's own bit in a `flagsChanged` event's flag word.
+///
+/// The low byte of `CGEventFlags` says which physical key moved, so this
+/// distinguishes right Option from left without a second read for the keycode.
+/// Measured on this keyboard: right Option down is `0x00080140`, up is
+/// `0x00000100`.
+const KCG_DEVICE_RIGHT_ALT: u64 = 0x0000_0040;
+/// Right Option is the dictation trigger. Right Control would have been the
+/// natural choice, but Apple laptop keyboards do not have one, and the fn key
+/// never reaches a session-level tap.
+const VK_RIGHT_OPTION: i64 = 0x3D;
 const KCG_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
 const KCG_KEYBOARD_EVENT_KEYCODE: u32 = 9;
 /// Non-zero when a key event is the OS repeating a held key.
@@ -170,6 +181,13 @@ static CHORD_RESETS: AtomicUsize = AtomicUsize::new(0);
 /// which is cheap enough to be safe there; the watchdog reads it.
 static EVENTS_SEEN: AtomicUsize = AtomicUsize::new(0);
 
+/// The tap's "this keystroke is ours" flag, reachable from outside the worker.
+///
+/// Dictation pastes from a thread of its own — it cannot wait for a
+/// transcription on the worker — and it has to raise the same guard around its
+/// injected Cmd+V, or the tap reads its own keystroke back as a chord.
+static INJECTING: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
+
 /// Trace chord activity to stderr. Off unless `CQ_DEBUG=1`, and only ever
 /// called from the worker thread.
 fn debug_on() -> bool {
@@ -190,6 +208,9 @@ enum Action {
     StepFolder(isize),
     /// Cmd released: the chord is over, so the popup comes down.
     ChordEnd,
+    /// Right Option went down (`true`) or came up (`false`): hold to dictate.
+    /// Carries where the pointer was, for the listening mark.
+    Dictate(bool, f64, f64),
     /// SPIKE (dictation trigger): a modifier changed. Logged by the worker so
     /// we can see which keycode and flag each candidate hold-to-talk key
     /// produces, and how long it was held. Off unless the marker file exists.
@@ -225,6 +246,7 @@ fn spike_enabled() -> bool {
 pub fn start(app: AppHandle, state: Arc<AppState>) {
     let (tx, rx) = mpsc::channel::<Action>();
     let injecting = Arc::new(AtomicBool::new(false));
+    let _ = INJECTING.set(injecting.clone());
 
     {
         let injecting = injecting.clone();
@@ -420,6 +442,18 @@ extern "C" fn tap_callback(
     if event_type == KCG_EVENT_FLAGS_CHANGED {
         if ctx.spike {
             let _ = ctx.tx.send(Action::Modifier { keycode, flags });
+        }
+        if keycode == VK_RIGHT_OPTION {
+            // Read from this event's own flags, never a cached state: the same
+            // reason the Cmd state is not cached (see `Ctx::pending_slot`).
+            let down = (flags & KCG_DEVICE_RIGHT_ALT) != 0;
+            // The location is read here because the worker cannot know where
+            // the pointer was when the key moved. One CoreGraphics call, which
+            // the chord path already makes on every armed digit.
+            let at = unsafe { CGEventGetLocation(event) };
+            let _ = ctx.tx.send(Action::Dictate(down, at.x, at.y));
+            // Passed through, not swallowed: Option is a real modifier and
+            // holding it must still reach the app underneath.
         }
         if is_command_key(keycode) {
             if (flags & KCG_FLAG_MASK_COMMAND) != 0 {
@@ -640,6 +674,9 @@ fn worker(
     // SPIKE: when each modifier went down, so a release can report how long it
     // was held. Worker-side, so the callback never reads a clock.
     let mut held: Vec<(i64, std::time::Instant)> = Vec::new();
+    /// When the dictation trigger went down, so its release knows how long it
+    /// was held. `None` when nothing is being dictated.
+    let mut dictating: Option<std::time::Instant> = None;
 
     while let Ok(action) = rx.recv() {
         match action {
@@ -648,6 +685,14 @@ fn worker(
                 show_popup(&app, &state, (x, y));
             }
             Action::ChordEnd => hide_popup(&app, &state),
+            Action::Dictate(down, x, y) => {
+                if down {
+                    dictating = Some(std::time::Instant::now());
+                    crate::dictate::begin(&app, (x, y));
+                } else if let Some(began) = dictating.take() {
+                    crate::dictate::end(&app, began.elapsed());
+                }
+            }
             Action::Modifier { keycode, flags } => {
                 let (name, mask) = modifier_of(keycode);
                 if flags & mask != 0 {
@@ -902,7 +947,7 @@ fn hide_popup(app: &AppHandle, state: &Arc<AppState>) {
 }
 
 /// Current pointer position, in points.
-fn cursor_location() -> (f64, f64) {
+pub(crate) fn cursor_location() -> (f64, f64) {
     unsafe {
         let ev = CGEventCreate(std::ptr::null_mut());
         if ev.is_null() {
@@ -911,6 +956,50 @@ fn cursor_location() -> (f64, f64) {
         let p = CGEventGetLocation(ev);
         CFRelease(ev as CFTypeRef);
         (p.x, p.y)
+    }
+}
+
+/// Paste a piece of text where the cursor is.
+///
+/// The same borrow-and-hand-back dance as a chord paste: whatever the user
+/// last copied is taken off the pasteboard, the text goes on, ⌘V is injected,
+/// and the original is put back — but only if nothing else claimed the
+/// pasteboard while we waited. Dictation that quietly ate the clipboard would
+/// be worse than dictation that did not work.
+pub(crate) fn paste_text(text: &str) {
+    let mut snap = clipboard::ClipSnapshot::default();
+    snap.items.push(clipboard::ClipItem {
+        types: vec![clipboard::ClipType {
+            uti: clipboard::UTI_TEXT.to_string(),
+            data: text.as_bytes().to_vec(),
+        }],
+    });
+
+    let borrowed = capture_stable(None);
+    if let Err(e) = clipboard::restore(&snap) {
+        crate::diag(&format!("dictate: could not put the text on the pasteboard: {e}"));
+        return;
+    }
+    let ours = clipboard::change_count();
+
+    // Our own Cmd+V must not be read back as a chord.
+    let guard = INJECTING.get();
+    if let Some(g) = guard {
+        g.store(true, Ordering::SeqCst);
+    }
+    inject_paste();
+    thread::sleep(Duration::from_millis(INJECT_GUARD_MS));
+    if let Some(g) = guard {
+        g.store(false, Ordering::SeqCst);
+    }
+
+    if let Some(prev) = borrowed {
+        thread::sleep(PASTE_HANDBACK_DELAY);
+        if clipboard::change_count() == ours {
+            if let Err(e) = clipboard::restore(&prev) {
+                crate::diag(&format!("dictate: could not hand the pasteboard back: {e}"));
+            }
+        }
     }
 }
 
@@ -1042,6 +1131,23 @@ mod tests {
         assert!(is_command_key(0x37));
         assert!(is_command_key(0x36));
         assert!(!is_command_key(VK_C));
+    }
+
+    /// The trigger reads its side from the flag word alone. These are the
+    /// exact words this keyboard produced while the spike was logging.
+    #[test]
+    fn right_option_is_told_from_left_by_its_own_bit() {
+        let right_down = 0x0008_0140u64;
+        let left_down = 0x0008_0120u64;
+        let released = 0x0000_0100u64;
+        assert_ne!(right_down & KCG_DEVICE_RIGHT_ALT, 0, "right Option down");
+        assert_eq!(left_down & KCG_DEVICE_RIGHT_ALT, 0, "left Option must not trigger");
+        assert_eq!(released & KCG_DEVICE_RIGHT_ALT, 0, "release must read as up");
+        // Right Command and right Shift carry neighbouring bits; none of them
+        // may be mistaken for the trigger.
+        assert_eq!(0x0010_0110u64 & KCG_DEVICE_RIGHT_ALT, 0, "right Cmd");
+        assert_eq!(0x0002_0104u64 & KCG_DEVICE_RIGHT_ALT, 0, "right Shift");
+        assert_eq!(VK_RIGHT_OPTION, 0x3D);
     }
 
     /// SPIKE: the trigger hunt depends on telling the two sides apart, and on

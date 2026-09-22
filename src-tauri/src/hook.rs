@@ -24,6 +24,21 @@ pub fn start(app: tauri::AppHandle, state: std::sync::Arc<crate::AppState>) {
 
 /// Trigger the system's Accessibility prompt. Exposed so the permissions flow
 /// owns all user-facing prompting in one place.
+/// Put text on the pasteboard and paste it where the cursor is, then give the
+/// pasteboard back. Used by dictation; the chord paste path does the same
+/// dance for a stored slot.
+#[cfg(target_os = "macos")]
+pub fn paste_text(text: &str) {
+    macos::paste_text(text);
+}
+
+/// Where the pointer is, in points. Exposed so the dictation mark can be put
+/// beside it without a second copy of the CoreGraphics call.
+#[cfg(target_os = "macos")]
+pub fn cursor_point() -> (f64, f64) {
+    macos::cursor_location()
+}
+
 #[cfg(target_os = "macos")]
 pub fn request_accessibility() -> bool {
     macos::request_accessibility()

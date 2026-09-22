@@ -407,8 +407,19 @@ fn toggle_mode(app: &AppHandle, state: &Arc<AppState>) {
 
 /// Build the tray menu. Rebuilt on every folder change, so the folder list and
 /// the active-folder labels stay current.
+/// Dictation's tray entry: a single item before the model is downloaded, and a
+/// submenu with the microphone list afterwards. An enum because the two are
+/// different types and both have to outlive the menu that borrows them.
+#[cfg(target_os = "macos")]
+enum DictateMenu {
+    Plain(tauri::menu::MenuItem<tauri::Wry>),
+    Sub(tauri::menu::Submenu<tauri::Wry>),
+}
+
 fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{CheckMenuItemBuilder, IsMenuItem, MenuBuilder, MenuItemBuilder, Submenu};
+    use tauri::menu::{
+        CheckMenuItemBuilder, IsMenuItem, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu,
+    };
     use tauri_plugin_autostart::ManagerExt;
 
     let (folders, active_name) = {
@@ -477,17 +488,58 @@ fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::men
 
     // Dictation needs a 547 MB model before it can do anything, so the way in
     // is a window that fetches it rather than a switch that would silently do
-    // nothing.
+    // nothing. Once the model is there, the microphone can be switched from
+    // here without opening anything — the device you want often changes at the
+    // moment you are about to speak, not while you are in a settings window.
     #[cfg(target_os = "macos")]
-    let dictate_i = MenuItemBuilder::with_id(
-        "dictate",
-        if dictate::ready() {
-            "Dictation\u{2026}"
+    let dictate_item = {
+        let open_i = MenuItemBuilder::with_id(
+            "dictate",
+            if dictate::ready() {
+                "Dictation\u{2026}"
+            } else {
+                "Set up dictation\u{2026}"
+            },
+        )
+        .build(app)?;
+        if !dictate::ready() {
+            // Nothing to configure yet: one plain item rather than a submenu
+            // whose only useful entry leads back to the same window.
+            DictateMenu::Plain(open_i)
         } else {
-            "Set up dictation\u{2026}"
-        },
-    )
-    .build(app)?;
+            let mics = dictate::mic_menu();
+            // The device list is read when the menu is built, which is each
+            // time the tray is refreshed, so a microphone plugged in a moment
+            // ago is there.
+            let default_i = CheckMenuItemBuilder::with_id("mic:", "Follow the system default")
+                .checked(mics.chosen.is_none())
+                .build(app)?;
+            let device_items = mics
+                .devices
+                .iter()
+                .map(|m| {
+                    CheckMenuItemBuilder::with_id(format!("mic:{}", m.id), &m.label)
+                        .checked(mics.chosen.as_deref() == Some(m.id.as_str()))
+                        .build(app)
+                })
+                .collect::<tauri::Result<Vec<_>>>()?;
+            let lock_i = CheckMenuItemBuilder::with_id("mic-lock", "Always use this microphone")
+                .checked(mics.locked)
+                // Locking to "whatever the system picks" means nothing.
+                .enabled(mics.chosen.is_some())
+                .build(app)?;
+            let sep = PredefinedMenuItem::separator(app)?;
+            let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&open_i, &sep, &default_i];
+            items.extend(device_items.iter().map(|i| i as &dyn IsMenuItem<tauri::Wry>));
+            items.push(&lock_i);
+            DictateMenu::Sub(Submenu::with_items(app, "Dictation", true, &items)?)
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let dictate_i: &dyn IsMenuItem<tauri::Wry> = match &dictate_item {
+        DictateMenu::Plain(i) => i,
+        DictateMenu::Sub(s) => s,
+    };
 
     MenuBuilder::new(app)
         .items(&[
@@ -498,7 +550,7 @@ fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::men
             #[cfg(target_os = "macos")]
             &shake_sub,
             #[cfg(target_os = "macos")]
-            &dictate_i,
+            dictate_i,
             &autostart_i,
             &clear_i,
             &quit_i,
@@ -547,6 +599,22 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
             #[cfg(target_os = "macos")]
             if id == "dictate" {
                 dictate::open_window(app);
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(device) = id.strip_prefix("mic:") {
+                if let Err(e) = dictate::choose_mic(device) {
+                    diag(&format!("dictate: could not choose a microphone: {e}"));
+                }
+                refresh_tray(app, &state);
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            if id == "mic-lock" {
+                if let Err(e) = dictate::toggle_mic_lock() {
+                    diag(&format!("dictate: could not lock the microphone: {e}"));
+                }
+                refresh_tray(app, &state);
                 return;
             }
             #[cfg(target_os = "macos")]
@@ -899,6 +967,14 @@ pub fn run() {
             dictate::dictate_open,
             #[cfg(target_os = "macos")]
             dictate::dictate_close,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_try,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_mics,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_set_mic,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_release,
             #[cfg(target_os = "macos")]
             dictate::dictate_models,
             #[cfg(target_os = "macos")]
