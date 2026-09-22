@@ -332,14 +332,39 @@ fn run_tap(tx: Sender<Action>, injecting: Arc<AtomicBool>) {
     // the one thing behaviour alone cannot distinguish: a tap that was never
     // created, one created but starved of events, and a chord machine that is
     // misreading them all look identical from outside.
-    thread::spawn(|| loop {
-        thread::sleep(Duration::from_secs(10));
-        crate::diag(&format!(
-            "tap watchdog: events_seen={} tap_installed={} {}",
-            EVENTS_SEEN.load(Ordering::Relaxed),
-            !TAP_PORT.load(Ordering::SeqCst).is_null(),
-            crate::permissions::report()
-        ));
+    // It reports a change, not a pulse. Writing every ten seconds regardless
+    // put 271,000 lines in the log against 1,100 from everything else in the
+    // app's entire history — which does not make the tap easier to diagnose,
+    // it makes everything else impossible to find.
+    thread::spawn(|| {
+        let mut was: Option<(bool, bool, String)> = None;
+        let mut seen_before = 0usize;
+        let mut since_said = 0u32;
+        loop {
+            thread::sleep(Duration::from_secs(10));
+            let seen = EVENTS_SEEN.load(Ordering::Relaxed);
+            let installed = !TAP_PORT.load(Ordering::SeqCst).is_null();
+            // Whether events are arriving is the diagnostic that matters: a tap
+            // that was never created, one created but starved, and a chord
+            // machine misreading them all look identical from outside, and only
+            // this tells the first two apart.
+            let flowing = seen > seen_before;
+            seen_before = seen;
+            let now = (installed, flowing, crate::permissions::report());
+
+            // Every half hour even when nothing changes, so a quiet log still
+            // proves the watchdog itself is alive.
+            since_said += 1;
+            let heartbeat = since_said >= 180;
+            if was.as_ref() != Some(&now) || heartbeat {
+                crate::diag(&format!(
+                    "tap watchdog: events_seen={seen} flowing={flowing} tap_installed={installed} {}",
+                    now.2
+                ));
+                was = Some(now);
+                since_said = 0;
+            }
+        }
     });
 
     loop {
