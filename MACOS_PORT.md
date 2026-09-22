@@ -6,8 +6,9 @@ record of how macOS actually behaves — including the places the original
 predictions were wrong, which are flagged as they come up. Those corrections are
 the most useful part of this document.
 
-Status: macOS works end to end on a signed, installed build. Windows v0.5.0 is
-unchanged and still shipping.
+Status: macOS works end to end on a signed, installed build, shipping as v0.6.0
+with Jotter, Shotter, the arrow-key folder switch and shake to open. Windows is
+unchanged since v0.5.2 and still shipping.
 
 ---
 

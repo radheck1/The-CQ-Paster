@@ -14,7 +14,7 @@ independent set of 9.
 | Platform | Status | Latest | Install |
 | --- | --- | --- | --- |
 | **Windows** (x64) | ✅ Available | **v0.5.2** | [Download the installer](https://github.com/radheck1/The-CQ-Paster/releases/latest) |
-| **macOS** (Apple Silicon + Intel) | ✅ Available | **v0.5.2** | [Download the installer](https://github.com/radheck1/The-CQ-Paster/releases/latest) |
+| **macOS** (Apple Silicon + Intel) | ✅ Available | **v0.6.0** | [Download the installer](https://github.com/radheck1/The-CQ-Paster/releases/latest) |
 
 > **Windows:** the build is not code-signed, so SmartScreen shows an "unknown
 > publisher" prompt on first run. Click **More info → Run anyway**.
@@ -153,8 +153,9 @@ screenshots from the Screenshot app, the menu bar, or a mouse button.
 
 ## macOS
 
-Shipping as of **v0.5.2**, as a universal build (Apple Silicon and Intel) in the
-same release as the Windows installer.
+Shipping as of **v0.6.0**, as a universal build (Apple Silicon and Intel). The
+Windows installer is still **v0.5.2**: everything 0.6.0 adds — Jotter, Shotter,
+the arrow-key folder switch and shake to open — is macOS only.
 
 ### Installing
 
