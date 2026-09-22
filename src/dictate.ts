@@ -115,7 +115,11 @@ export function detail(m: ModelStatus, p: Progress | undefined): string {
 }
 
 function render() {
-  const allDone = models.length > 0 && models.every((m) => m.have);
+  // Speech is what dictation cannot do without; the rewrite model is optional
+  // and its absence only means the transcript is pasted as heard.
+  const speech = models.find((m) => m.id === "whisper");
+  const allDone = !!speech?.have;
+  const everything = models.length > 0 && models.every((m) => m.have);
   const failed = [...live.values()].some((p) => p.state === "failed");
 
   root.innerHTML = `
@@ -127,8 +131,12 @@ function render() {
     </div>
     <div class="dc-body">
       <p class="dc-lede">
-        Dictation runs on this Mac. What you say is transcribed here and never
-        sent anywhere.
+        Hold the right <b>⌥</b> key, speak, let go. Dictation runs on this Mac:
+        what you say is transcribed here and never sent anywhere.${
+          models.find((m) => m.id === "rewrite")?.have
+            ? " Hold <b>Shift</b> too to paste it exactly as heard, without the clean-up."
+            : ""
+        }
       </p>
       <div class="dc-models">
         ${models
@@ -159,7 +167,7 @@ function render() {
           // A way out at every moment. Mid-download the window used to offer
           // only "Stop", which left no way to dismiss it without abandoning
           // the download it was reporting on.
-          allDone
+          everything
             ? `<button class="dc-btn primary" id="dc-close">Done</button>`
             : busy
               ? `<button class="dc-btn" id="dc-cancel">Stop</button>
@@ -224,9 +232,11 @@ function render() {
       }
       <p class="dc-foot">
         ${
-          allDone
-            ? "Dictation is ready to use."
-            : "You can close this window — the download carries on, and stopping keeps what has arrived."
+          everything
+            ? "Dictation is ready, and what you say is cleaned up before it is pasted."
+            : allDone
+              ? "Dictation works now. The second model cleans up what you say — backtracking and filler — and is optional."
+              : "You can close this window — the download carries on, and stopping keeps what has arrived."
         }
       </p>
     </div>`;

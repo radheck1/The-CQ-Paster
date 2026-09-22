@@ -20,6 +20,7 @@
 pub mod capture;
 pub mod engine;
 pub mod indicator;
+pub mod rewrite;
 pub mod vocab;
 
 use std::path::{Path, PathBuf};
@@ -50,16 +51,28 @@ pub struct ModelSpec {
     pub bytes: u64,
 }
 
-/// Speech recognition only, for now. The rewrite model joins this list when
-/// that half is built, and everything here already handles more than one.
-pub const MODELS: &[ModelSpec] = &[ModelSpec {
-    id: "whisper",
-    label: "Speech recognition",
-    file: "ggml-large-v3-turbo-q5_0.bin",
-    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-    sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
-    bytes: 574_041_195,
-}];
+pub const MODELS: &[ModelSpec] = &[
+    ModelSpec {
+        id: "whisper",
+        label: "Speech recognition",
+        file: "ggml-large-v3-turbo-q5_0.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        bytes: 574_041_195,
+    },
+    // Eight times the size of the speech model, for one job: applying a spoken
+    // self-correction and dropping filler. Apache 2.0. The 3B was tried and
+    // rejected — 5/8 against this one's 8/8 on the same corpus, emitting
+    // invalid bytes and deleting words, and non-commercially licensed besides.
+    ModelSpec {
+        id: "rewrite",
+        label: "Cleaning up what you said",
+        file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        sha256: "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423",
+        bytes: 4_683_074_240,
+    },
+];
 
 /// Where a model by id ended up, whether or not it has been downloaded.
 pub fn model_path(id: &str) -> Option<PathBuf> {
@@ -190,9 +203,11 @@ pub fn status() -> Vec<ModelStatus> {
         .collect()
 }
 
-/// Is every model present?
+/// Can dictation run at all? Speech is the only model it cannot do without —
+/// the rewrite improves the text and its absence just means the transcript is
+/// pasted as heard.
 pub fn ready() -> bool {
-    MODELS.iter().all(|s| final_path(s).exists())
+    model_path("whisper").map(|p| p.exists()).unwrap_or(false)
 }
 
 /// Set while a download runs, so a second press of the button doesn't start a
@@ -531,6 +546,11 @@ pub fn begin(app: &AppHandle, at: (f64, f64)) {
         crate::diag("dictate: trigger held, but the speech model is not downloaded");
         return;
     }
+    // Start the rewrite engine and get the instruction into its prompt cache
+    // while the user is still talking. Neither depends on what is said, and
+    // together they are most of the cost: 649 ms for the first rewrite after
+    // launch against 244-355 ms once warm.
+    rewrite::prewarm();
     indicator::show(app, at);
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     *FOLLOWING.lock().unwrap() = Some(running.clone());
@@ -544,7 +564,7 @@ pub fn begin(app: &AppHandle, at: (f64, f64)) {
 /// The trigger came up. Transcribes and pastes, on a thread of its own: this
 /// is called from the hook's worker, which must not be held for the second or
 /// two that transcription takes.
-pub fn end(app: &AppHandle, held: std::time::Duration) {
+pub fn end(app: &AppHandle, held: std::time::Duration, as_heard: bool) {
     end_indicator(app);
     let app = app.clone();
     std::thread::spawn(move || {
@@ -573,8 +593,12 @@ pub fn end(app: &AppHandle, held: std::time::Duration) {
                         // does the writing: it owns `jotter.json`, and a second
                         // writer here would have its append saved over by
                         // whatever the editor next wrote.
+                        //
+                        // Always the transcript, never the rewrite: the point
+                        // of keeping it is to have what was actually said.
                         let _ = app.emit_to("main", "dictate-transcript", text.clone());
-                        crate::hook::paste_text(&text);
+                        let out = if as_heard { text.clone() } else { rewrite::clean(&text) };
+                        crate::hook::paste_text(&out);
                     }
                     Ok(_) => crate::diag("dictate: nothing was heard"),
                     Err(e) => crate::diag(&format!("dictate: {e}")),

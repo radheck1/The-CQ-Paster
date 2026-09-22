@@ -1,7 +1,8 @@
 {
   "bundle": {
     "externalBin": [
-      "binaries/whisper-server"
+      "binaries/whisper-server",
+      "binaries/llama-server"
     ],
     "macOS": {
       "entitlements": "Entitlements.plist"

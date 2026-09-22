@@ -1061,6 +1061,12 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             shake::start(app.handle());
 
+            // Dictation's rewrite engine holds about 6 GB while it is loaded.
+            // Give that back when it goes unused; the next dictation reloads it
+            // while the trigger is still held.
+            #[cfg(target_os = "macos")]
+            dictate::rewrite::watch_idle();
+
             // Main window: closing hides it instead of quitting the app.
             if let Some(main) = app.get_webview_window("main") {
 

@@ -210,7 +210,7 @@ enum Action {
     ChordEnd,
     /// Right Option went down (`true`) or came up (`false`): hold to dictate.
     /// Carries where the pointer was, for the listening mark.
-    Dictate(bool, f64, f64),
+    Dictate { down: bool, x: f64, y: f64, shift: bool },
     /// SPIKE (dictation trigger): a modifier changed. Logged by the worker so
     /// we can see which keycode and flag each candidate hold-to-talk key
     /// produces, and how long it was held. Off unless the marker file exists.
@@ -451,7 +451,11 @@ extern "C" fn tap_callback(
             // the pointer was when the key moved. One CoreGraphics call, which
             // the chord path already makes on every armed digit.
             let at = unsafe { CGEventGetLocation(event) };
-            let _ = ctx.tx.send(Action::Dictate(down, at.x, at.y));
+            // Shift held at the moment of release means "paste what I actually
+            // said", skipping the clean-up. Read from this event's own flags,
+            // like everything else here.
+            let shift = (flags & KCG_FLAG_MASK_SHIFT) != 0;
+            let _ = ctx.tx.send(Action::Dictate { down, x: at.x, y: at.y, shift });
             // Passed through, not swallowed: Option is a real modifier and
             // holding it must still reach the app underneath.
         }
@@ -685,12 +689,12 @@ fn worker(
                 show_popup(&app, &state, (x, y));
             }
             Action::ChordEnd => hide_popup(&app, &state),
-            Action::Dictate(down, x, y) => {
+            Action::Dictate { down, x, y, shift } => {
                 if down {
                     dictating = Some(std::time::Instant::now());
                     crate::dictate::begin(&app, (x, y));
                 } else if let Some(began) = dictating.take() {
-                    crate::dictate::end(&app, began.elapsed());
+                    crate::dictate::end(&app, began.elapsed(), shift);
                 }
             }
             Action::Modifier { keycode, flags } => {

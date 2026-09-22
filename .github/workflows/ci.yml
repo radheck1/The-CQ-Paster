@@ -56,14 +56,15 @@ jobs:
       # signs anything, so a placeholder is enough to get to the part that
       # matters here — compiling and running the tests. A real bundle needs
       # scripts/build-whisper-server.sh.
-      - name: Placeholder for the macOS speech engine
+      - name: Placeholders for the macOS engines
         if: matrix.os == 'macos-latest'
         run: |
           mkdir -p src-tauri/binaries
           for triple in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
-            printf '#!/bin/sh\necho "CI placeholder, not the real engine" >&2\nexit 1\n' \
-              > "src-tauri/binaries/whisper-server-$triple"
-            chmod +x "src-tauri/binaries/whisper-server-$triple"
+            for engine in whisper-server llama-server; do
+              printf '#!/bin/sh\nexit 1\n' > "src-tauri/binaries/$engine-$triple"
+              chmod +x "src-tauri/binaries/$engine-$triple"
+            done
           done
 
       - name: Install frontend dependencies

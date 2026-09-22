@@ -70,7 +70,7 @@ fn sidecar() -> Option<PathBuf> {
 
 /// A port the OS says is free. Asked for rather than fixed, so two copies of
 /// CQ — or anything else already on 8080 — cannot collide.
-fn free_port() -> std::io::Result<u16> {
+pub fn free_port() -> std::io::Result<u16> {
     let l = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = l.local_addr()?.port();
     drop(l);
