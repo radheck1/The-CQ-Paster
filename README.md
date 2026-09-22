@@ -209,9 +209,10 @@ quietly using the wrong microphone.
 - **The first dictation after starting your Mac is slow** — about 15 seconds
   while the models are read from disk. After that it's about a second.
 - **It only ever removes words, never invents them.** cQ checks that before
-  typing anything: if the tidied version contains something you didn't say, or
-  has lost too much of what you did say, you get your own words instead. Either
-  way the exact transcript is in the **Dictations** jotpad.
+  typing anything: if the tidied version contains something you didn't say, has
+  lost too much of what you did say, or has dropped a whole sentence you never
+  corrected, you get your own words instead. Either way the exact transcript is
+  in the **Dictations** jotpad.
 - **The tidying model is released after ten idle minutes**, giving back about
   6 GB. The next dictation reloads it while you're still speaking — though if
   it hasn't finished loading within four seconds, that one is typed as you said

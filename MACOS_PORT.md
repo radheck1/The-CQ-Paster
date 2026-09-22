@@ -976,9 +976,34 @@ half the words to survive. Both failed on real speech:
 
 So: joining words may be added, and the size floor depends on whether the
 speaker corrected themselves — 20% with a correction marker present, 70%
-without, since without one nothing should be leaving but filler. The measured
-sentence-dropping failure has no marker and is still caught. Both cases are
+without, since without one nothing should be leaving but filler. Both cases are
 fixtures.
+
+**A word count cannot see a lost sentence.** Lose one of six and 83% of the
+words still survive, above any floor worth setting; and once a correction is
+present the floor has to be permissive enough for a double false start, so it
+goes blind entirely. Each sentence of the transcript is therefore checked on
+its own: it must leave a trace in the output, judged by the words unique to it,
+because a word repeated elsewhere proves nothing about whether *this* sentence
+survived. A sentence may vanish only when it, or the one after it, carries a
+correction marker — which is what being superseded looks like.
+
+**The failure this was written for could not be reproduced.** Seventeen
+dictations were tried: short ones with corrections, realistic 100–137 word
+ones, and eight built around the exact structure of the original loss — a
+sentence immediately after a correction, including the sentence that failed
+before. None dropped anything; 95–98% of words survived throughout.
+
+That says the blind spot was mis-attributed rather than fixed by luck. The
+original loss happened under the earlier, formatting-heavy instruction that
+turned speech into bullet lists and code fences; a model rearranging text drops
+pieces. The shipped instruction only deletes, and measures that way. **The
+narrow instruction is the mitigation; the guard is the second line.**
+
+The check was then run against all 28 real rewrites gathered while building
+this — every provocation plus the dictations read aloud for testing — and
+rejected none of them. That number matters because the previous guard rejected
+a third of real output.
 
 **Idle.** The engine exits after ten unused minutes and gives back its memory.
 The reload starts on key-down, but that only hides it when the model file is
@@ -1235,9 +1260,11 @@ Verified on macOS unless noted. Windows passes all of these.
       right `⌥` collides with anything in practice
 - [ ] **The idle timeout actually firing**, and the memory coming back. The
       wiring is verified; ten minutes of waiting is not
-- [ ] **A dictation that both corrects itself and loses a sentence.** With a
-      correction marker present the guard allows a large cut, so this is the
-      case it can no longer catch — the jotpad is the only recovery
+- [x] **A dictation that both corrects itself and loses a sentence** is caught
+      by the per-sentence check, which a word count cannot do. Note that the
+      failure itself could not be provoked in 17 attempts — see §7.8
+- [x] The guard accepts all 28 real rewrites gathered while building this,
+      having rejected a third of them before
 
 ---
 
