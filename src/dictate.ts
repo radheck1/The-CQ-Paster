@@ -103,13 +103,18 @@ function render() {
       </div>
       <div class="dc-actions">
         ${
+          // A way out at every moment. Mid-download the window used to offer
+          // only "Stop", which left no way to dismiss it without abandoning
+          // the download it was reporting on.
           allDone
             ? `<button class="dc-btn primary" id="dc-close">Done</button>`
             : busy
-              ? `<button class="dc-btn" id="dc-cancel">Stop</button>`
-              : `<button class="dc-btn primary" id="dc-go">${
-                  failed || models.some((m) => m.downloaded > 0) ? "Try again" : "Download"
-                }</button>`
+              ? `<button class="dc-btn" id="dc-cancel">Stop</button>
+                 <button class="dc-btn" id="dc-close">Close</button>`
+              : `<button class="dc-btn" id="dc-close">Close</button>
+                 <button class="dc-btn primary" id="dc-go">${
+                   failed || models.some((m) => m.downloaded > 0) ? "Try again" : "Download"
+                 }</button>`
         }
       </div>
       <p class="dc-foot">
@@ -131,7 +136,9 @@ function render() {
     void invoke("dictate_cancel");
   });
   root.querySelector<HTMLButtonElement>("#dc-close")?.addEventListener("click", () => {
-    void import("@tauri-apps/api/window").then((w) => w.getCurrentWindow().close());
+    // Through Rust: the web view is not granted `allow-close`, so closing its
+    // own window from here is refused by the ACL and does nothing at all.
+    void invoke("dictate_close");
   });
 }
 

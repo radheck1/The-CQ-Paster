@@ -377,9 +377,34 @@ pub fn open_window(app: &AppHandle) {
             return;
         }
     };
+    // Closing keeps the window for next time, the way the markup window does,
+    // and means a download started here is not interrupted by dismissing it.
+    let handle = app.clone();
+    win.on_window_event(move |ev| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
+            api.prevent_close();
+            if let Some(w) = handle.get_webview_window(WINDOW) {
+                let _ = w.hide();
+            }
+        }
+    });
     crate::make_native_titlebar(app, WINDOW);
     let _ = win.show();
     let _ = win.set_focus();
+    crate::diag("dictate: setup window open");
+}
+
+/// Dismiss the setup window.
+///
+/// The frontend cannot close its own window: `core:window:default` grants 28
+/// permissions and `allow-close` is not among them, so calling `close()` from
+/// the web view is refused by the ACL and nothing happens. Every other window
+/// here goes through a command for the same reason.
+#[tauri::command]
+pub fn dictate_close(app: AppHandle) {
+    if let Some(win) = app.get_webview_window(WINDOW) {
+        let _ = win.hide();
+    }
 }
 
 #[tauri::command]

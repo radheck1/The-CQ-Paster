@@ -898,6 +898,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             dictate::dictate_open,
             #[cfg(target_os = "macos")]
+            dictate::dictate_close,
+            #[cfg(target_os = "macos")]
             dictate::dictate_models,
             #[cfg(target_os = "macos")]
             dictate::dictate_download,
