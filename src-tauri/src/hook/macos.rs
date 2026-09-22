@@ -190,6 +190,10 @@ enum Action {
     StepFolder(isize),
     /// Cmd released: the chord is over, so the popup comes down.
     ChordEnd,
+    /// SPIKE (dictation trigger): a modifier changed. Logged by the worker so
+    /// we can see which keycode and flag each candidate hold-to-talk key
+    /// produces, and how long it was held. Off unless the marker file exists.
+    Modifier { keycode: i64, flags: u64 },
 }
 
 /// Everything the callback needs, reached through the tap's `user_info`
@@ -205,6 +209,17 @@ struct Ctx {
     /// in flight, and a stale flag would then misread a later plain `Cmd+C` as
     /// a slot store, silently clobbering a saved slot.
     pending_slot: AtomicUsize,
+    /// SPIKE: log every modifier change. A plain `bool` rather than an atomic —
+    /// it is written once before the tap exists and only read afterwards, so
+    /// the callback pays a single load. See `spike_enabled`.
+    spike: bool,
+}
+
+/// SPIKE: is the dictation-trigger log switched on? Decided once at startup, by
+/// the presence of a marker file beside the other state, so the same build is
+/// an ordinary CQ for anyone who hasn't created it.
+fn spike_enabled() -> bool {
+    crate::data_dir().join("trigger-spike").exists()
 }
 
 pub fn start(app: AppHandle, state: Arc<AppState>) {
@@ -288,6 +303,7 @@ fn run_tap(tx: Sender<Action>, injecting: Arc<AtomicBool>) {
         tx,
         injecting,
         pending_slot: AtomicUsize::new(0),
+        spike: spike_enabled(),
     }));
 
     // Watchdog. Reports whether the tap is actually seeing keystrokes, which is
@@ -402,6 +418,9 @@ extern "C" fn tap_callback(
     let keycode = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) };
 
     if event_type == KCG_EVENT_FLAGS_CHANGED {
+        if ctx.spike {
+            let _ = ctx.tx.send(Action::Modifier { keycode, flags });
+        }
         if is_command_key(keycode) {
             if (flags & KCG_FLAG_MASK_COMMAND) != 0 {
                 // A fresh Cmd press begins a new chord: forget any leftover
@@ -618,6 +637,10 @@ fn worker(
 ) {
     clipboard::init_thread(); // no-op on macOS; kept for symmetry with Windows
 
+    // SPIKE: when each modifier went down, so a release can report how long it
+    // was held. Worker-side, so the callback never reads a clock.
+    let mut held: Vec<(i64, std::time::Instant)> = Vec::new();
+
     while let Ok(action) = rx.recv() {
         match action {
             Action::Peek(slot, x, y) => {
@@ -625,6 +648,24 @@ fn worker(
                 show_popup(&app, &state, (x, y));
             }
             Action::ChordEnd => hide_popup(&app, &state),
+            Action::Modifier { keycode, flags } => {
+                let (name, mask) = modifier_of(keycode);
+                if flags & mask != 0 {
+                    held.retain(|(k, _)| *k != keycode);
+                    held.push((keycode, std::time::Instant::now()));
+                    crate::diag(&format!(
+                        "spike: {name} ({keycode:#04x}) DOWN  flags {flags:#010x}"
+                    ));
+                } else {
+                    let ms = match held.iter().position(|(k, _)| *k == keycode) {
+                        Some(i) => format!("{} ms", held.remove(i).1.elapsed().as_millis()),
+                        None => "unknown".into(),
+                    };
+                    crate::diag(&format!(
+                        "spike: {name} ({keycode:#04x}) UP    held {ms}  flags {flags:#010x}"
+                    ));
+                }
+            }
             Action::StepFolder(by) => {
                 let switched = {
                     let mut folders = state.folders.lock().unwrap();
@@ -907,6 +948,25 @@ const VK_V: i64 = 0x09;
 const VK_LEFT_ARROW: i64 = 0x7B;
 const VK_RIGHT_ARROW: i64 = 0x7C;
 
+/// SPIKE: a modifier keycode's name and the flag bit it owns, so a
+/// `flagsChanged` event can be read as that key going down or coming up.
+/// Masks are `CGEventFlags` from `CGEventTypes.h`.
+fn modifier_of(keycode: i64) -> (&'static str, u64) {
+    match keycode {
+        0x37 => ("left Cmd", 0x0010_0000),
+        0x36 => ("RIGHT Cmd", 0x0010_0000),
+        0x38 => ("left Shift", 0x0002_0000),
+        0x3C => ("RIGHT Shift", 0x0002_0000),
+        0x3A => ("left Option", 0x0008_0000),
+        0x3D => ("RIGHT Option", 0x0008_0000),
+        0x3B => ("left Control", 0x0004_0000),
+        0x3E => ("RIGHT Control", 0x0004_0000),
+        0x3F => ("fn/Globe", 0x0080_0000),
+        0x39 => ("Caps Lock", 0x0001_0000),
+        _ => ("other", 0),
+    }
+}
+
 fn is_command_key(keycode: i64) -> bool {
     matches!(keycode, 0x37 | 0x36) // left / right Command
 }
@@ -982,6 +1042,21 @@ mod tests {
         assert!(is_command_key(0x37));
         assert!(is_command_key(0x36));
         assert!(!is_command_key(VK_C));
+    }
+
+    /// SPIKE: the trigger hunt depends on telling the two sides apart, and on
+    /// each key owning the flag bit that says whether it is down.
+    #[test]
+    fn modifier_of_separates_left_from_right() {
+        assert_eq!(modifier_of(0x3D).0, "RIGHT Option");
+        assert_eq!(modifier_of(0x3A).0, "left Option");
+        assert_ne!(modifier_of(0x36).0, modifier_of(0x37).0);
+        // Same physical modifier, so the same flag bit: only the keycode says
+        // which side, which is exactly why the callback logs both.
+        assert_eq!(modifier_of(0x36).1, modifier_of(0x37).1);
+        assert_eq!(modifier_of(0x3F), ("fn/Globe", 0x0080_0000));
+        // A non-modifier owns no bit, so it can never read as "down".
+        assert_eq!(modifier_of(VK_C).1, 0);
     }
 
     #[test]
