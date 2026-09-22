@@ -116,6 +116,10 @@ pub fn show(app: &AppHandle, at: (f64, f64)) {
         return;
     };
     place(&win, at);
+    // Back to the level meter. Without this the spinner from the previous
+    // dictation would still be showing, and every dictation after the first
+    // would look like it was already thinking.
+    let _ = app.emit_to(WINDOW, "dictate-working", false);
 
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -135,6 +139,21 @@ pub fn show(app: &AppHandle, at: (f64, f64)) {
         // activate CQ and take focus off the app being dictated into.
         ns.orderFrontRegardless();
     });
+}
+
+/// Stop listening and show that the words are being worked on.
+///
+/// The mark used to disappear the moment the key came up, which is exactly
+/// when there is most to wait for: a long dictation spends a second or two
+/// being transcribed and cleaned, with nothing on screen to say so. It stays
+/// where it is and changes what it shows instead.
+pub fn working(app: &AppHandle) {
+    // The follower is retired, so the mark stops chasing the pointer — by now
+    // the hand is usually off the mouse, and a spinner that wanders is worse
+    // than one that sits still.
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+    set_level(0.0);
+    let _ = app.emit_to(WINDOW, "dictate-working", true);
 }
 
 pub fn hide(app: &AppHandle) {

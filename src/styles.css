@@ -2288,3 +2288,40 @@ body[data-window="listening"] #app {
 .dc-vocab-note.over {
   color: var(--danger);
 }
+
+/* The mark stays up while what was said is transcribed and cleaned, and turns
+   into a spinner. The colours are CQ's three tools — Paster's green, Jotter's
+   orange, Shotter's blue — so the wait looks like it belongs to this app and
+   not like a generic throbber. */
+.dl-spin {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    #2a9d8f 0deg,
+    #2b82ca 120deg,
+    #cd5a2b 240deg,
+    #2a9d8f 360deg
+  );
+  /* A ring, not a disc: the hole is what makes it read as "working" rather
+     than as a coloured dot. */
+  mask: radial-gradient(circle, transparent 3.6px, #000 4.2px);
+  -webkit-mask: radial-gradient(circle, transparent 3.6px, #000 4.2px);
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.45));
+  animation: dl-spin 900ms linear infinite;
+}
+
+@keyframes dl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Motion is the whole signal here, so with it turned off the ring holds still
+   and the colours alone say CQ is busy. */
+@media (prefers-reduced-motion: reduce) {
+  .dl-spin {
+    animation: none;
+  }
+}
