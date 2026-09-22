@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Shown by macOS the first time dictation opens the microphone. It is the
+       only explanation the user gets, so it says where the audio goes, which
+       for this app is nowhere. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>CQ transcribes what you dictate on this Mac. Your audio is never sent anywhere.</string>
+</dict>
+</plist>

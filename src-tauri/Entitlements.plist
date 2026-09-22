@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- CQ is signed with the hardened runtime. Under it, reaching the
+       microphone needs this entitlement as well as the usage string in
+       Info.plist: the string is what TCC shows the user, this is what allows
+       the access at all. The app is not sandboxed, so nothing else is needed.
+
+       Adding entitlements changes the signature, and macOS keys Accessibility
+       on that — expect to grant it again after the first install that has
+       this file. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>

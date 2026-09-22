@@ -379,3 +379,26 @@ function matchLines(a: Line[], b: Line[]): number[] {
   }
   return found;
 }
+
+/**
+ * Put a dictation at the top of a note.
+ *
+ * Newest first, with a blank line between entries: the pad is a log you go
+ * back to, and what you want is nearly always the last thing you said. A
+ * multi-line transcript keeps its lines, each flat — a transcript has no
+ * outline to it.
+ *
+ * Separate from the editor so it can be tested without a window.
+ */
+export function withDictation(existing: Line[], text: string): Line[] {
+  const added = text
+    .split("\n")
+    .map((t) => t.trim())
+    .filter((t) => t !== "")
+    .map((t) => ({ text: t, depth: 0, done: false }));
+  if (added.length === 0) return existing;
+  // An untouched note is a single empty line; replacing it keeps a blank first
+  // line from sitting above every dictation forever.
+  if (isPristine(existing)) return added;
+  return [...added, blankLine(), ...existing];
+}

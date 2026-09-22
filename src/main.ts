@@ -5,6 +5,8 @@ import * as jotter from "./jotter";
 import * as reminders from "./reminders";
 import * as shotter from "./shotter";
 import * as markup from "./markup";
+import * as dictate from "./dictate";
+import * as listening from "./listening";
 
 type Preview = {
   kind: "text" | "image" | "files" | "other";
@@ -1048,6 +1050,16 @@ async function boot() {
     await markup.start(app);
     return;
   }
+  // macOS: the dictation setup window, which fetches the speech model.
+  if (label === "dictate") {
+    await dictate.start(app);
+    return;
+  }
+  // macOS: the small mark beside the pointer while dictation listens.
+  if (label === "listening") {
+    await listening.start(app);
+    return;
+  }
   // Re-fit the control panel whenever it's opened/focused, so it can't flash at
   // the initial config size before the content measurement settles.
   if (label === "main") {
@@ -1071,6 +1083,12 @@ async function boot() {
     });
   }
   if (IS_MAC && label === "main") {
+    // Every dictation is kept verbatim in its own jotpad, whether or not the
+    // control panel is open — the window is hidden rather than closed, so this
+    // listener is alive for as long as CQ is.
+    await listen<string>("dictate-transcript", ({ payload }) => {
+      jotter.appendDictation(payload);
+    });
     await startJotter();
     await startShotter();
     openSavedView();
