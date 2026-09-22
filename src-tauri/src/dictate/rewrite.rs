@@ -132,6 +132,10 @@ pub enum Refused {
     /// like a very thorough filler removal, so this is a threshold rather than
     /// a certainty — which is why the raw transcript is kept either way.
     TooShort { kept: usize, had: usize },
+    /// A whole sentence left no trace, and nothing nearby corrected it. This
+    /// is what a word count cannot see: lose one sentence out of six and 83%
+    /// still survives, far above any floor worth setting.
+    LostSentence(String),
     /// Nothing came back.
     Empty,
 }
@@ -168,6 +172,58 @@ pub fn has_correction(transcript: &str) -> bool {
         .any(|w| CORRECTION_MARKERS.contains(&w.as_str()))
 }
 
+/// Split on sentence endings. Dictated text is punctuated by whisper, so this
+/// is reliable enough for the one thing it is used for: noticing that a whole
+/// thought has gone.
+pub fn sentences(s: &str) -> Vec<String> {
+    s.split(|c| c == '.' || c == '!' || c == '?')
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect()
+}
+
+/// Words belonging to this sentence alone. A sentence is judged by these
+/// because a word repeated elsewhere proves nothing about whether *this*
+/// sentence survived.
+fn distinctive(sentence: &str, whole: &[String]) -> Vec<String> {
+    content_words(sentence)
+        .into_iter()
+        .filter(|w| whole.iter().filter(|x| *x == w).count() == 1)
+        .collect()
+}
+
+/// Did every sentence leave a trace?
+///
+/// A word count cannot answer this. Lose one sentence of six and 83% of the
+/// words still survive, which passes any floor worth setting — and a floor low
+/// enough to allow a double false start is far below that. So each sentence is
+/// checked on its own.
+///
+/// A sentence may vanish when it, or the one after it, carries a correction
+/// marker: that is what being corrected looks like. Anywhere else, a sentence
+/// that leaves nothing behind was dropped.
+pub fn every_sentence_survives(transcript: &str, rewritten: &str) -> Result<(), Refused> {
+    let whole = content_words(transcript);
+    let out = content_words(rewritten);
+    let parts = sentences(transcript);
+    for (i, part) in parts.iter().enumerate() {
+        let mine = distinctive(part, &whole);
+        if mine.is_empty() {
+            continue; // nothing here is unique to it; there is nothing to check
+        }
+        if mine.iter().any(|w| out.contains(w)) {
+            continue; // some of it is still there
+        }
+        let corrected_here = has_correction(part);
+        let corrected_next = parts.get(i + 1).map(|n| has_correction(n)).unwrap_or(false);
+        if corrected_here || corrected_next {
+            continue; // superseded, which is the whole point of the feature
+        }
+        return Err(Refused::LostSentence(part.clone()));
+    }
+    Ok(())
+}
+
 /// Check a rewrite against the transcript it came from.
 pub fn check(transcript: &str, rewritten: &str) -> Result<(), Refused> {
     let out = content_words(rewritten);
@@ -202,7 +258,10 @@ pub fn check(transcript: &str, rewritten: &str) -> Result<(), Refused> {
     if (kept as f64) < floor * total as f64 {
         return Err(Refused::TooShort { kept, had: total });
     }
-    Ok(())
+    // The floor above is blind to losing one sentence out of several, and once
+    // a correction is present it has to be permissive enough that it would
+    // never notice. This is what actually covers that.
+    every_sentence_survives(transcript, rewritten)
 }
 
 fn model() -> Option<std::path::PathBuf> {
@@ -520,6 +579,79 @@ mod tests {
             check("send report to Priya", "send report to Marcus"),
             Err(Refused::Invented(_))
         ));
+    }
+
+    /// The case the word count cannot see, and the reason this check exists.
+    #[test]
+    fn one_sentence_of_six_can_go_missing_while_the_count_looks_healthy() {
+        let had = "The deploy went out at nine. I am seeing errors in the dashboard. \
+                   Rachel needs the release notes. Amanda signed off on the numbers. \
+                   Support has not been told yet. Book an hour with the data team.";
+        // Everything except the release notes.
+        let lost = "The deploy went out at nine. I am seeing errors in the dashboard. \
+                    Amanda signed off on the numbers. Support has not been told yet. \
+                    Book an hour with the data team.";
+        // The floor is nowhere near catching this: most of the words survive.
+        let kept = content_words(lost).len() as f64 / content_words(had).len() as f64;
+        assert!(kept > 0.8, "only {kept:.2} survived, which a floor would catch anyway");
+        assert!(matches!(check(had, lost), Err(Refused::LostSentence(_))));
+    }
+
+    /// ...and the same loss hides completely once a correction is present,
+    /// because the floor must then be permissive enough for a double false
+    /// start.
+    #[test]
+    fn a_correction_elsewhere_does_not_hide_a_dropped_sentence() {
+        let had = "Ship it Monday, no wait, ship it Tuesday. Tell support first. \
+                   Rachel needs the release notes by then.";
+        let lost = "Ship it Tuesday. Rachel needs the release notes by then.";
+        assert!(has_correction(had));
+        // The word-count floor passes it: a correction is present, so the
+        // floor is 20% and far more than that survived.
+        assert!(matches!(check(had, lost), Err(Refused::LostSentence(_))));
+    }
+
+    #[test]
+    fn a_superseded_sentence_may_vanish() {
+        // Measured: this exact rewrite is what the model produces.
+        let had = "Let's do the review on Monday. No, wait, Monday's the holiday. \
+                   Let's do Tuesday at 2:00. Actually, 2:30.";
+        assert_eq!(check(had, "Let's do Tuesday at 2:30."), Ok(()));
+    }
+
+    #[test]
+    fn the_sentence_after_a_correction_is_still_protected() {
+        // The original failure, whose shape this check was written around: the
+        // model deleted the superseded half and took the next sentence too.
+        let had = "Let's meet Tuesday. No, actually Wednesday at three thirty. \
+                   And I'll send the CSV beforehand.";
+        let lost = "Let's meet Wednesday at three thirty.";
+        assert!(matches!(check(had, lost), Err(Refused::LostSentence(_))));
+        // What the model actually does now keeps it, and passes.
+        assert_eq!(
+            check(had, "Let's meet Wednesday at three thirty. And I'll send the CSV beforehand."),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn sentences_split_on_what_whisper_writes() {
+        assert_eq!(sentences("One. Two! Three?"), ["One", "Two", "Three"]);
+        assert_eq!(sentences("  "), Vec::<String>::new());
+        // A dictation with no final stop is still one sentence.
+        assert_eq!(sentences("just this"), ["just this"]);
+    }
+
+    #[test]
+    fn a_sentence_with_nothing_of_its_own_is_not_judged() {
+        // A sentence that shares every word with its neighbours cannot be
+        // shown to have gone, so this check must stay silent about it and
+        // leave the question to the word count.
+        let had = "Do it now. Do it now.";
+        assert_eq!(every_sentence_survives(had, "Do it now."), Ok(()));
+        // The floor is what rejects that one, and it should: half the words
+        // went with no correction to explain it.
+        assert!(matches!(check(had, "Do it now."), Err(Refused::TooShort { .. })));
     }
 
     #[test]
