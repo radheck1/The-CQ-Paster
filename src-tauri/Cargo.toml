@@ -77,6 +77,12 @@ sha2 = "0.10"
 # Local time for the reminder schedule. Already built for Tauri, with this
 # feature set, so it adds nothing to the build.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Dictation: the microphone. Portable by design — the same crate covers
+# Windows, so capture will not have to be written twice — but declared here so
+# the Windows build does not compile it before there is anything to use it for.
+# It adds two crates to the macOS build (itself and coreaudio-sys); the rest of
+# what it drags into Cargo.lock is other platforms' backends, never built here.
+cpal = "0.18.2"
 
 [target.'cfg(windows)'.dependencies]
 rdev = { version = "0.5", features = ["unstable_grab"] }
