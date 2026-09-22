@@ -20,6 +20,7 @@
 pub mod capture;
 pub mod engine;
 pub mod indicator;
+pub mod record;
 pub mod rewrite;
 pub mod vocab;
 
@@ -565,10 +566,18 @@ pub fn begin(app: &AppHandle, at: (f64, f64)) {
 /// is called from the hook's worker, which must not be held for the second or
 /// two that transcription takes.
 pub fn end(app: &AppHandle, held: std::time::Duration, as_heard: bool) {
-    end_indicator(app);
+    // Not hidden yet: transcribing and cleaning take a second or two on a long
+    // dictation, and the mark stays to say so.
+    if held >= MIN_HOLD {
+        indicator::working(app);
+    } else {
+        end_indicator(app);
+    }
     let app = app.clone();
     std::thread::spawn(move || {
         let short = held < MIN_HOLD;
+        // Whatever happens below, the mark comes down.
+        let done = |app: &AppHandle| end_indicator(app);
         match capture::stop(&scratch_wav()) {
             Ok(Some(wav)) => {
                 if short {
@@ -577,6 +586,7 @@ pub fn end(app: &AppHandle, held: std::time::Duration, as_heard: bool) {
                         held.as_millis()
                     ));
                     let _ = std::fs::remove_file(&wav);
+                    done(&app);
                     return;
                 }
                 let began = std::time::Instant::now();
@@ -587,26 +597,43 @@ pub fn end(app: &AppHandle, held: std::time::Duration, as_heard: bool) {
                             began.elapsed().as_secs_f32(),
                             text.len()
                         ));
-                        // The raw transcript goes to the Dictations jotpad
-                        // before it is pasted, so a word lost between here and
-                        // the document is still findable. The control panel
-                        // does the writing: it owns `jotter.json`, and a second
-                        // writer here would have its append saved over by
-                        // whatever the editor next wrote.
-                        //
-                        // Always the transcript, never the rewrite: the point
-                        // of keeping it is to have what was actually said.
-                        let _ = app.emit_to("main", "dictate-transcript", text.clone());
-                        let out = if as_heard { text.clone() } else { rewrite::clean(&text) };
+                        // Kept where a word lost between here and the
+                        // document can still be found — both versions and
+                        // which was used, so a rewrite that went wrong can be
+                        // looked into rather than argued about. Not shown
+                        // anywhere: a list of raw transcripts is not something
+                        // anyone wants among their notes.
+                        let out = if as_heard {
+                            record::write(&text, None, &text, None);
+                            text.clone()
+                        } else {
+                            let c = rewrite::clean_verbose(&text);
+                            record::write(&text, c.rewrite.as_deref(), &c.paste, c.note.as_deref());
+                            c.paste
+                        };
+                        // Down before the paste, not after: the paste puts
+                        // the text where the user is looking, and a spinner
+                        // still sitting there is the first thing they would
+                        // see instead of their words.
+                        done(&app);
                         crate::hook::paste_text(&out);
                     }
-                    Ok(_) => crate::diag("dictate: nothing was heard"),
-                    Err(e) => crate::diag(&format!("dictate: {e}")),
+                    Ok(_) => {
+                        crate::diag("dictate: nothing was heard");
+                        done(&app);
+                    }
+                    Err(e) => {
+                        crate::diag(&format!("dictate: {e}"));
+                        done(&app);
+                    }
                 }
                 let _ = std::fs::remove_file(&wav);
             }
-            Ok(None) => {}
-            Err(e) => crate::diag(&format!("dictate: {e}")),
+            Ok(None) => done(&app),
+            Err(e) => {
+                crate::diag(&format!("dictate: {e}"));
+                done(&app);
+            }
         }
     });
 }

@@ -24,10 +24,18 @@ const FLOOR = 0.22;
 const DECAY = 0.82;
 
 let bars: HTMLElement[] = [];
+let root: HTMLElement;
 const heights = new Array(BARS).fill(FLOOR);
 let level = 0;
+/** Listening to the microphone, or working on what was said. */
+let working = false;
 
 function frame() {
+  if (working) {
+    // The spinner is CSS; nothing to drive from here.
+    requestAnimationFrame(frame);
+    return;
+  }
   for (let i = 0; i < BARS; i++) {
     // Each bar gets its own slice of the level, with a little variation so
     // they do not move as one block.
@@ -41,14 +49,31 @@ function frame() {
   requestAnimationFrame(frame);
 }
 
+function draw() {
+  root.innerHTML = working
+    ? `<div class="dl-wrap" aria-label="CQ is working on what you said">
+         <span class="dl-spin"></span>
+       </div>`
+    : `<div class="dl-wrap" aria-label="CQ is listening">
+         ${Array.from({ length: BARS }, () => `<span class="dl-bar"></span>`).join("")}
+       </div>`;
+  bars = Array.from(root.querySelectorAll<HTMLElement>(".dl-bar"));
+}
+
 export async function start(app: HTMLElement) {
-  app.innerHTML = `
-    <div class="dl-wrap" aria-label="CQ is listening">
-      ${Array.from({ length: BARS }, () => `<span class="dl-bar"></span>`).join("")}
-    </div>`;
-  bars = Array.from(app.querySelectorAll<HTMLElement>(".dl-bar"));
+  root = app;
+  draw();
   await listen<number>("dictate-level", ({ payload }) => {
     level = typeof payload === "number" && payload >= 0 ? Math.min(1, payload) : 0;
+  });
+  // True when the key came up and the words are being transcribed and
+  // cleaned; false when a new dictation starts. One event rather than two, so
+  // there is no way to switch into the spinner and never switch back — which
+  // is exactly what a missing second event would have caused.
+  await listen<boolean>("dictate-working", ({ payload }) => {
+    working = payload === true;
+    if (!working) heights.fill(FLOOR);
+    draw();
   });
   requestAnimationFrame(frame);
 }

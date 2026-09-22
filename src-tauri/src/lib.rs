@@ -96,13 +96,38 @@ pub fn diag(msg: &str) {
         .unwrap_or(0);
     let line = format!("[{secs}] {msg}");
     eprintln!("[cq-paster] {line}");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(data_dir().join("diagnostics.log"))
+    let path = data_dir().join("diagnostics.log");
+    roll_if_big(&path);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path)
     {
         let _ = writeln!(f, "{line}");
     }
+}
+
+/// The log keeps at most this much, twice: the live file and one previous.
+///
+/// Small on purpose. What this file is for is the last thing that happened
+/// before something went wrong, and a reader who has to search megabytes for
+/// it will not find it. The file had reached 30 MB before this existed.
+const LOG_MAX: u64 = 2 * 1024 * 1024;
+
+/// Move the log aside once it is too big, keeping one generation.
+///
+/// Checked on every line rather than on a timer: the check is a `metadata`
+/// call, and a log that is only trimmed while the app happens to be running a
+/// timer is a log that grows unbounded in the cases that matter.
+fn roll_if_big(path: &std::path::Path) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return; // not there yet
+    };
+    if meta.len() < LOG_MAX {
+        return;
+    }
+    let previous = path.with_extension("log.1");
+    // Rename rather than truncate: anything holding the old file keeps
+    // writing to something real, and the previous generation survives for
+    // exactly as long as it takes to fill another.
+    let _ = std::fs::rename(path, &previous);
 }
 
 /// Where folders (and their slots) are persisted, so they survive restarts.

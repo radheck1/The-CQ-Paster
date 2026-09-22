@@ -157,7 +157,8 @@ screenshots from the Screenshot app, the menu bar, or a mouse button.
 wherever your cursor is, tidied up: if you correct yourself mid-sentence, only
 the corrected version is kept, and "um" and "like" go. A small bar of waves
 appears beside the pointer while it listens, moving with what the microphone
-actually hears, and follows the pointer around.
+actually hears, and follows the pointer around; when you let go it becomes a
+spinner until your words arrive.
 
 > Said: "Let's do the review on Monday. No, wait, Monday's the holiday. Let's
 > do Tuesday at 2:00. Actually, 2:30."
@@ -177,9 +178,11 @@ account and nothing to pay for.
 - **A quick tap of right `⌥` does nothing** — a hold has to last about
   four-tenths of a second before anything is recorded, so brushing the key
   can't start a dictation. Right `⌥` still works as a normal modifier.
-- **Every dictation is also kept**, word for word, in a jotpad called
-  **Dictations** — newest first. Nothing is lost if a transcript comes out
-  wrong or lands somewhere unexpected.
+- **Every dictation is kept**, word for word, in `dictations.log` beside cQ's
+  other files — what was heard, what the tidying made of it, and which was
+  used. It isn't shown anywhere: it's there so nothing is lost if a transcript
+  comes out wrong, not to be read day to day. It holds the last few hundred
+  dictations and drops the oldest.
 - **Your clipboard survives.** cQ borrows it to paste and puts back what was
   there, unless you copied something else in the meantime.
 
@@ -211,8 +214,8 @@ quietly using the wrong microphone.
 - **It only ever removes words, never invents them.** cQ checks that before
   typing anything: if the tidied version contains something you didn't say, has
   lost too much of what you did say, or has dropped a whole sentence you never
-  corrected, you get your own words instead. Either way the exact transcript is
-  in the **Dictations** jotpad.
+  corrected, you get your own words instead. Either way both versions are in
+  `dictations.log`.
 - **The tidying model is released after ten idle minutes**, giving back about
   6 GB. The next dictation reloads it while you're still speaking — though if
   it hasn't finished loading within four seconds, that one is typed as you said

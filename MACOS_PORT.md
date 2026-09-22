@@ -934,12 +934,34 @@ does, and only if nothing else claimed it meanwhile. It raises the tap's
 `injecting` guard, which now has a handle outside the worker because
 transcription cannot be done on the worker thread.
 
-**Every transcript is also written to a jotpad**, verbatim, because the pasted
-copy was otherwise the only one. That pad is a new *plain* kind — no depth, no
-crossing off — and is permanent for the same reason the home folder is:
-something writes to it without asking. The control panel does the writing, not
-Rust: it owns `jotter.json`, and an append behind its back would be saved over
-by whatever the editor next wrote.
+**Every dictation is recorded** in `dictations.log`: what was heard, what the
+clean-up made of it, which was pasted, and why if the guard refused. One JSON
+line each, capped at 512 KB with one previous generation. Written by Rust —
+the first version sent the transcript to the control panel to append to a
+jotpad, which made the record depend on a window being alive to receive it.
+
+It was a jotpad at first, and that was wrong twice over. A list of raw
+transcripts is not something anyone wants among their notes; and `repairDoc`
+builds every folder from scratch and never read `kind` back from disk, so each
+launch found no dictation pad and made another one. Five had accumulated before
+it was noticed — the check after installing it looked once, when there was
+exactly one. `retireDictationPads` merges them into a single ordinary jotpad,
+keeping the text, and nothing creates one again. Verified against the real
+file: 5 pads to 1, all 21 dictated lines kept.
+
+The plain-jotpad machinery went with it, which returned `renderLines`,
+`layoutDots`, `onDotDown` and `canClear` to being byte-identical to before
+dictation existed — a better answer to the Windows question than the reasoning
+that had been standing in for it.
+
+**The mark stays up while the words are worked on.** It used to vanish when the
+key came up, which is exactly when there is something to wait for. It stops
+following the pointer, turns into a ring in the three tool colours, and comes
+down just before the paste — not after, since the paste puts text where the
+user is looking and a spinner still sitting there would be the first thing they
+saw instead of their words. One event with a boolean drives it: two events
+would allow switching into the spinner with nothing to switch back, which is
+what the first attempt did.
 
 ### Cleaning up what was said
 
@@ -1238,7 +1260,10 @@ Verified on macOS unless noted. Windows passes all of these.
       voice rather than animating on its own
 - [x] The vocabulary reaches the decoder — spoken "underscore" comes through as
       one, confirmed on the user's own speech
-- [x] Every transcript is written to the Dictations jotpad, flat, newest first
+- [x] Every dictation is recorded in `dictations.log`, both versions and which
+      was pasted
+- [x] Dictation pads from older versions merge into one ordinary jotpad,
+      keeping their text — checked against a real file with five of them
 - [x] Other jotpads keep their bullets and crossing off
 - [x] The microphone list shows real devices; the chosen one is used and logged
 - [ ] **A quick tap of right `⌥` records nothing** — the 400 ms threshold is
@@ -1260,6 +1285,8 @@ Verified on macOS unless noted. Windows passes all of these.
       right `⌥` collides with anything in practice
 - [ ] **The idle timeout actually firing**, and the memory coming back. The
       wiring is verified; ten minutes of waiting is not
+- [ ] **The spinner on a slow dictation.** It shows while transcribing and
+      cleaning; only a dictation long enough to take a second proves it
 - [x] **A dictation that both corrects itself and loses a sentence** is caught
       by the per-sentence check, which a word count cannot do. Note that the
       failure itself could not be provoked in 17 attempts — see §7.8
@@ -1294,5 +1321,5 @@ Verified on macOS unless noted. Windows passes all of these.
   must rank and evict, not accumulate.
 - **`whisper-server` is bundled but unversioned.** Nothing records which
   whisper.cpp commit produced the binary in `src-tauri/binaries/`.
-- **`diagnostics.log` never rotates.** The tap watchdog writes a line every ten
-  seconds — about 8,600 a day — and the file had reached 30 MB during this work.
+- **The vocabulary could gather itself** from what CQ already holds — the
+  clipboard slots and the jotpads — rather than being typed. Still open.
