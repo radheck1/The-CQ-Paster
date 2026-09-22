@@ -16,10 +16,10 @@ import { listen } from "@tauri-apps/api/event";
 const BARS = 5;
 /** Fractions of full height; the middle bars lead so it reads as a voice. */
 const SHAPE = [0.55, 0.85, 1.0, 0.85, 0.55];
-/** Always visible, so the mark reads as "listening" even in silence. With no
- *  pill behind them the bars are the whole mark, so the floor is higher than
- *  it was — at 0.14 of 12px there would be almost nothing on screen. */
-const FLOOR = 0.22;
+/** Always visible, so the mark reads as "listening" even in silence. The bars
+ *  are the whole mark, with no pill behind them, so the floor has to leave
+ *  something on screen: at 0.14 of a 20px bar there would be almost nothing. */
+const FLOOR = 0.2;
 /** How fast a bar falls back. Rising is immediate so speech looks responsive. */
 const DECAY = 0.82;
 

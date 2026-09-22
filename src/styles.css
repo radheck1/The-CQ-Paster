@@ -2170,25 +2170,44 @@ body[data-window="listening"] #app {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 2.4px;
+  gap: 4.4px;
   /* Nothing here should ever take a click; Rust also sets the window
      click-through, and this is the belt to that braces. */
   pointer-events: none;
 }
 
+/* The meter is the same family as the working blob: CQ's three tool colours,
+   soft-edged and glowing rather than hard little rectangles. Symmetrical —
+   green, blue, orange, blue, green — so all three read at once and the tallest
+   bar in the middle is the orange, which is where the blob's orange sits too. */
 .dl-bar {
-  width: 2.4px;
-  height: 14px;
-  border-radius: 1.2px;
-  background: #2b2d31;
-  /* Dark bars on a dark desktop would vanish, and there is no pill behind
-     them to sit on. A pale halo — not a drop shadow — is what keeps them
-     readable over a dark window; over a light one it is invisible and the
-     grey does the work on its own. */
-  box-shadow: 0 0 2.5px rgba(255, 255, 255, 0.75);
+  width: 1.6px;
+  height: 20px;
+  border-radius: 0.8px;
   transform: scaleY(0.22);
   transform-origin: center;
   will-change: transform;
+  /* Barely softened. At 1.6px wide a blur of much more than a third of a
+     pixel erases the bar entirely; the glow below is what gives it presence,
+     not the blur. */
+  filter: blur(0.35px);
+}
+
+.dl-bar:nth-child(1),
+.dl-bar:nth-child(5) {
+  background: rgba(38, 194, 168, 0.95);
+  box-shadow: 0 0 6px rgba(38, 194, 168, 0.85), 0 0 2px rgba(0, 0, 0, 0.4);
+}
+
+.dl-bar:nth-child(2),
+.dl-bar:nth-child(4) {
+  background: rgba(56, 152, 232, 0.95);
+  box-shadow: 0 0 6px rgba(56, 152, 232, 0.85), 0 0 2px rgba(0, 0, 0, 0.4);
+}
+
+.dl-bar:nth-child(3) {
+  background: rgba(240, 122, 56, 0.96);
+  box-shadow: 0 0 7px rgba(240, 122, 56, 0.9), 0 0 2px rgba(0, 0, 0, 0.4);
 }
 
 /* The mark is a voice meter: if motion is unwelcome, the bars hold still and
@@ -2289,37 +2308,56 @@ body[data-window="listening"] #app {
   color: var(--danger);
 }
 
-/* The mark stays up while what was said is transcribed and cleaned, and turns
-   into a spinner. The colours are CQ's three tools — Paster's green, Jotter's
-   orange, Shotter's blue — so the wait looks like it belongs to this app and
-   not like a generic throbber. */
+/* The mark stays up while what was said is transcribed and cleaned. A soft
+   glowing blob rather than a ring: a hard geometric spinner reads as a system
+   progress control, and this is meant to feel like something the app is
+   thinking with. The colours are CQ's three tools — Paster's green, Shotter's
+   blue, Jotter's orange — blurred into each other so none of them has an edge. */
 .dl-spin {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: conic-gradient(
-    from 0deg,
-    #2a9d8f 0deg,
-    #2b82ca 120deg,
-    #cd5a2b 240deg,
-    #2a9d8f 360deg
-  );
-  /* A ring, not a disc: the hole is what makes it read as "working" rather
-     than as a coloured dot. */
-  mask: radial-gradient(circle, transparent 3.6px, #000 4.2px);
-  -webkit-mask: radial-gradient(circle, transparent 3.6px, #000 4.2px);
-  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.45));
-  animation: dl-spin 900ms linear infinite;
+  width: 34px;
+  height: 26px;
+  /* Not a circle and not symmetric: each corner has its own radius, so the
+     shape is an imperfect oval rather than a lozenge. */
+  border-radius: 58% 42% 47% 53% / 52% 46% 54% 48%;
+  /* Three overlapping pools of colour rather than a gradient with stops, so
+     the mixing happens where they meet and there is no seam anywhere.
+     Order matters: CSS paints the first layer on top, so the orange goes
+     first — listed last it sat under the other two and all but disappeared. */
+  background:
+    radial-gradient(circle at 52% 68%, rgba(240, 122, 56, 0.9), transparent 58%),
+    radial-gradient(circle at 70% 40%, rgba(56, 152, 232, 0.88), transparent 62%),
+    radial-gradient(circle at 30% 38%, rgba(38, 194, 168, 0.88), transparent 62%);
+  /* Blur first, then glow: a drop-shadow after the blur picks up the softened
+     shape, so the halo follows the blob as it moves rather than sitting in a
+     fixed ring behind it. */
+  filter: blur(3.4px) saturate(1.5)
+    drop-shadow(0 0 6px rgba(60, 180, 200, 0.55))
+    drop-shadow(0 0 12px rgba(235, 120, 60, 0.35));
+  /* See-through: what is underneath should still be readable through it. */
+  opacity: 0.78;
+  animation: dl-drift 2.8s ease-in-out infinite;
 }
 
-@keyframes dl-spin {
-  to {
-    transform: rotate(360deg);
+/* The shape changes as it turns, so it never looks like a rigid object
+   spinning — it is closer to something settling and re-forming. */
+@keyframes dl-drift {
+  0%,
+  100% {
+    border-radius: 58% 42% 47% 53% / 52% 46% 54% 48%;
+    transform: rotate(0deg) scale(1);
+  }
+  33% {
+    border-radius: 45% 55% 62% 38% / 44% 60% 40% 56%;
+    transform: rotate(130deg) scale(1.08);
+  }
+  66% {
+    border-radius: 52% 48% 38% 62% / 62% 41% 59% 38%;
+    transform: rotate(245deg) scale(0.95);
   }
 }
 
-/* Motion is the whole signal here, so with it turned off the ring holds still
-   and the colours alone say CQ is busy. */
+/* Motion is the signal, so with it turned off the blob holds still and the
+   colours and glow alone say CQ is busy. */
 @media (prefers-reduced-motion: reduce) {
   .dl-spin {
     animation: none;

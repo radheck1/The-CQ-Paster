@@ -155,10 +155,10 @@ screenshots from the Screenshot app, the menu bar, or a mouse button.
 
 **Hold the right `⌥` key, say something, let go.** What you said is typed in
 wherever your cursor is, tidied up: if you correct yourself mid-sentence, only
-the corrected version is kept, and "um" and "like" go. A small bar of waves
-appears beside the pointer while it listens, moving with what the microphone
-actually hears, and follows the pointer around; when you let go it becomes a
-spinner until your words arrive.
+the corrected version is kept, and "um" and "like" go. A small meter appears
+beside the pointer while it listens, moving with what the microphone actually
+hears; when you let go it becomes a soft glow until your words arrive. Both
+follow the pointer around.
 
 > Said: "Let's do the review on Monday. No, wait, Monday's the holiday. Let's
 > do Tuesday at 2:00. Actually, 2:30."

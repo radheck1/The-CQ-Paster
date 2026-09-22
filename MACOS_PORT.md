@@ -955,13 +955,20 @@ dictation existed — a better answer to the Windows question than the reasoning
 that had been standing in for it.
 
 **The mark stays up while the words are worked on.** It used to vanish when the
-key came up, which is exactly when there is something to wait for. It stops
-following the pointer, turns into a ring in the three tool colours, and comes
+key came up, which is exactly when there is something to wait for. It keeps
+following the pointer, becomes a soft glow in the three tool colours, and comes
 down just before the paste — not after, since the paste puts text where the
 user is looking and a spinner still sitting there would be the first thing they
 saw instead of their words. One event with a boolean drives it: two events
-would allow switching into the spinner with nothing to switch back, which is
-what the first attempt did.
+would allow switching into the working state with nothing to switch back,
+which is what the first attempt did.
+
+**The window is much larger than what it draws, and has to be.** The glow
+reaches about 17 points past the shape, and a window sized to the shape clips
+that halo off square — a hard edge on a soft glow is exactly what gives away
+that there is a window there. 84 x 66 points around a 34 x 26 blob, the rest
+transparent and click-through. The offset places what is *drawn* beside the
+pointer, not the window, which is mostly empty margin.
 
 ### Cleaning up what was said
 
