@@ -439,8 +439,58 @@ fn ask(port: u16, text: &str, n_predict: u32) -> Result<String, String> {
 /// Clean up a transcript. Returns the transcript unchanged if the rewrite
 /// cannot be trusted — the point is to improve the text, never to risk it.
 pub fn clean(transcript: &str) -> String {
+    clean_verbose(transcript).paste
+}
+
+/// What a dictation should paste, and what to record about it.
+pub struct Cleaned {
+    /// The text to paste. Never a rewrite that was refused.
+    pub paste: String,
+    /// What the model produced, whether or not it was used. Kept so a refusal
+    /// can be checked rather than taken on trust.
+    pub rewrite: Option<String>,
+    /// Why it was not used, when it was not.
+    pub note: Option<String>,
+}
+
+/// As `clean`, but says what happened.
+///
+/// `paste` and `rewrite` are deliberately separate fields. Folding them into
+/// one and letting the caller pick would mean a refused rewrite is one
+/// `unwrap_or` away from being pasted, which is the opposite of what the guard
+/// is for.
+pub fn clean_verbose(transcript: &str) -> Cleaned {
+    match clean_inner(transcript) {
+        Outcome::Used(t) => Cleaned {
+            paste: t.clone(),
+            rewrite: Some(t),
+            note: None,
+        },
+        Outcome::Refused(t, why) => Cleaned {
+            paste: transcript.to_string(),
+            rewrite: Some(t),
+            note: Some(why),
+        },
+        Outcome::None(why) => Cleaned {
+            paste: transcript.to_string(),
+            rewrite: None,
+            note: why,
+        },
+    }
+}
+
+enum Outcome {
+    /// The rewrite is good and was used.
+    Used(String),
+    /// A rewrite came back but could not be trusted; the transcript is pasted.
+    Refused(String, String),
+    /// There was no rewrite at all — no model, no engine, or Shift held.
+    None(Option<String>),
+}
+
+fn clean_inner(transcript: &str) -> Outcome {
     if transcript.trim().is_empty() || !available() {
-        return transcript.to_string();
+        return Outcome::None(None);
     }
     let began = Instant::now();
     // Short budget: the trigger started the engine while this was being
@@ -450,7 +500,7 @@ pub fn clean(transcript: &str) -> String {
         Ok(p) => p,
         Err(e) => {
             crate::diag(&format!("dictate: no rewrite ({e}) — pasting as heard"));
-            return transcript.to_string();
+            return Outcome::None(Some(e));
         }
     };
     // Room for the whole transcript back, plus a little.
@@ -459,7 +509,7 @@ pub fn clean(transcript: &str) -> String {
         Ok(t) => t,
         Err(e) => {
             crate::diag(&format!("dictate: no rewrite ({e})"));
-            return transcript.to_string();
+            return Outcome::None(Some(e));
         }
     };
     match check(transcript, &rewritten) {
@@ -468,13 +518,13 @@ pub fn clean(transcript: &str) -> String {
                 "dictate: rewritten in {:.0} ms",
                 began.elapsed().as_secs_f32() * 1000.0
             ));
-            rewritten
+            Outcome::Used(rewritten)
         }
         Err(why) => {
-            // The raw transcript is what gets pasted. It is also already in the
-            // Dictations jotpad, so nothing is lost either way.
+            // The transcript is what gets pasted. Both versions go into the
+            // record, so a refusal can be checked rather than taken on trust.
             crate::diag(&format!("dictate: rewrite rejected ({why:?}), pasting as heard"));
-            transcript.to_string()
+            Outcome::Refused(rewritten, format!("{why:?}"))
         }
     }
 }
@@ -684,6 +734,20 @@ mod tests {
             check("meet Thursday", "meet Thursday Thursday"),
             Err(Refused::Invented(_))
         ));
+    }
+
+    /// The bug this shape exists to prevent: a refused rewrite must never be
+    /// what gets pasted, however convenient the field would be to reach for.
+    #[test]
+    fn a_refused_rewrite_is_kept_for_the_record_but_never_pasted() {
+        let c = Cleaned {
+            paste: "what I said".into(),
+            rewrite: Some("what it made of it".into()),
+            note: Some("LostSentence(..)".into()),
+        };
+        assert_eq!(c.paste, "what I said");
+        assert_ne!(c.paste, c.rewrite.clone().unwrap());
+        assert!(c.note.is_some(), "a refusal must carry its reason");
     }
 
     #[test]
