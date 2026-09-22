@@ -57,7 +57,11 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "CQ Paster Self Signed"
-    }
+      "signingIdentity": "CQ Paster Self Signed",
+      "entitlements": "Entitlements.plist"
+    },
+    "externalBin": [
+      "binaries/whisper-server"
+    ]
   }
 }

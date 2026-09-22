@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# The bundled speech engine: ~20 MB, rebuilt by scripts/build-whisper-server.sh
+src-tauri/binaries/
