@@ -35,11 +35,21 @@ pub const WINDOW: &str = "listening";
 
 /// Points, matching `.dl-wrap` in the stylesheet. Small enough to read as a
 /// mark beside the pointer rather than a window near it.
-const WIDTH: f64 = 53.0;
-const HEIGHT: f64 = 19.0;
-/// Below and right of the pointer, clear of the arrow itself and of what is
-/// usually being pointed at.
-const OFFSET: (f64, f64) = (14.0, 16.0);
+///
+/// Taller than the bars alone need: the working blob is larger than they are,
+/// and it has a glow that has to fall inside the window or it is clipped off
+/// square, which is the one thing that would give away that this is a window.
+/// Much larger than what is drawn inside it, and deliberately so. The blob's
+/// glow reaches about 17 points past its own edge, and a window that only fits
+/// the shape clips that halo off square — which is exactly what gives away
+/// that there is a window there at all. The extra space is transparent and
+/// click-through, so it costs nothing.
+const WIDTH: f64 = 84.0;
+const HEIGHT: f64 = 66.0;
+/// Placed so that what is *drawn* lands beside the pointer, not so the window
+/// does: the window is mostly empty margin, and centring it on the pointer
+/// would put the mark in the wrong place entirely.
+const OFFSET: (f64, f64) = (-2.0, -7.0);
 /// Same rate as the cursor popup's follower: smooth to the eye, cheap.
 const FOLLOW: Duration = Duration::from_millis(33);
 /// Below this, a move is the hand resting rather than the mouse travelling.
@@ -145,13 +155,15 @@ pub fn show(app: &AppHandle, at: (f64, f64)) {
 ///
 /// The mark used to disappear the moment the key came up, which is exactly
 /// when there is most to wait for: a long dictation spends a second or two
-/// being transcribed and cleaned, with nothing on screen to say so. It stays
-/// where it is and changes what it shows instead.
+/// being transcribed and cleaned, with nothing on screen to say so. It changes
+/// what it shows instead.
+///
+/// It keeps following the pointer. The first version retired the follower here
+/// on the theory that the hand would be off the mouse by then — but the moment
+/// after speaking is often exactly when the pointer is being moved to where
+/// the words should land, and a mark that stays behind while that happens is
+/// worse than one that follows.
 pub fn working(app: &AppHandle) {
-    // The follower is retired, so the mark stops chasing the pointer — by now
-    // the hand is usually off the mouse, and a spinner that wanders is worse
-    // than one that sits still.
-    GENERATION.fetch_add(1, Ordering::SeqCst);
     set_level(0.0);
     let _ = app.emit_to(WINDOW, "dictate-working", true);
 }
