@@ -1083,6 +1083,12 @@ async function boot() {
     });
   }
   if (IS_MAC && label === "main") {
+    // Every dictation is kept verbatim in its own jotpad, whether or not the
+    // control panel is open — the window is hidden rather than closed, so this
+    // listener is alive for as long as CQ is.
+    await listen<string>("dictate-transcript", ({ payload }) => {
+      jotter.appendDictation(payload);
+    });
     await startJotter();
     await startShotter();
     openSavedView();

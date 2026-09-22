@@ -34,6 +34,7 @@ import {
   restoreCrossed,
   serialize,
   shiftDepth,
+  withDictation,
   splitLine,
   toggleDone,
   type Line,
@@ -42,7 +43,18 @@ import {
 
 /** Which tool the control panel shows. Kept here because it is saved with the notes. */
 export type View = "paster" | "jotter" | "shotter";
-type Folder = { id: number; name: string; lines: Line[]; reminder: Reminder };
+/**
+ * `kind` absent is the ordinary jotpad: bullets, indenting, crossing off.
+ * `"plain"` is a note and nothing else — no depth, no done — which is what
+ * dictations want, since a transcript is not a to-do list.
+ */
+type Folder = {
+  id: number;
+  name: string;
+  lines: Line[];
+  reminder: Reminder;
+  kind?: "plain";
+};
 
 /**
  * One folder's reminder settings. The schedule itself runs in the backend
@@ -91,6 +103,13 @@ type Sel = { anchor: Pos; focus: Pos };
 const MAX_NAME = 24;
 /** The home folder can't be renamed, so its name lives here rather than on disk. */
 const HOME_NAME = "Main Jots";
+/**
+ * The jotpad dictations are kept in. Always present, like the home folder, and
+ * for the same reason: something writes to it without asking, so it cannot be
+ * allowed not to exist. It is plain, so a transcript is never indented or
+ * crossed off by accident.
+ */
+export const DICTATIONS_NAME = "Dictations";
 const SAVE_MS = 300;
 /** Same window Paster gives its Undo. */
 const UNDO_MS = 10000;
@@ -110,8 +129,21 @@ const defaultDoc = (): Doc => ({
   view: "paster",
   height: null,
   active: 1,
-  nextId: 2,
-  folders: [{ id: 1, name: HOME_NAME, lines: [blankLine()], reminder: defaultReminder() }],
+  nextId: 3,
+  folders: [
+    { id: 1, name: HOME_NAME, lines: [blankLine()], reminder: defaultReminder() },
+    // Present from the first launch, not only after a file has been repaired:
+    // a fresh install reaches `defaultDoc` without passing through
+    // `repairDoc`, and dictations addressed to a pad that does not exist would
+    // be dropped without a word.
+    {
+      id: 2,
+      name: DICTATIONS_NAME,
+      lines: [blankLine()],
+      reminder: defaultReminder(),
+      kind: "plain",
+    },
+  ],
 });
 
 let doc = defaultDoc();
@@ -169,6 +201,23 @@ function repairDoc(raw: unknown): Doc {
   if (folders.length === 0) folders.push(...fresh.folders);
   // Also renames a home folder saved under an earlier name.
   folders[0].name = HOME_NAME;
+  // Exactly one dictation pad, whatever the file said. A second one — from a
+  // rename, or a file edited by hand — would leave dictations landing in
+  // whichever was found first.
+  const dictation = folders.filter((f) => f.kind === "plain");
+  for (const extra of dictation.slice(1)) extra.kind = undefined;
+  if (dictation.length === 0) {
+    folders.push({
+      id: 0,
+      name: DICTATIONS_NAME,
+      lines: [blankLine()],
+      reminder: defaultReminder(),
+      kind: "plain",
+    });
+    needsId.push(folders[folders.length - 1]);
+  } else {
+    dictation[0].name = DICTATIONS_NAME;
+  }
   let nextId = Math.max(
     typeof r.nextId === "number" && Number.isInteger(r.nextId) ? r.nextId : 1,
     ...folders.map((f) => f.id + 1),
@@ -215,7 +264,14 @@ export const savedHeight = () => doc.height;
 export const activeId = () => folder().id;
 export const activeName = () => folder().name;
 /** Whether Clear Jots has anything to remove in the open note. */
-export const canClear = () => hasCrossed(folder().lines);
+export const canClear = () => !isPlain() && hasCrossed(folder().lines);
+
+/** Is the open jotpad a plain note — no bullets, nothing to cross off? */
+export const isPlain = () => folder().kind === "plain";
+
+/** Is this jotpad the one dictations are written to? */
+export const isDictations = (id: number) =>
+  doc.folders.find((f) => f.id === id)?.kind === "plain";
 export const reminder = () => folder().reminder;
 
 /** Change the open folder's reminder settings. */
@@ -263,7 +319,10 @@ export function createFolder(name: string) {
 
 export function renameFolder(id: number, name: string) {
   const f = doc.folders.find((x) => x.id === id);
-  if (!f || id === homeId()) return;
+  // The dictation pad keeps its name for the same reason the home folder
+  // does: dictations are addressed to it, and a renamed one could not be
+  // found again.
+  if (!f || id === homeId() || f.kind === "plain") return;
   f.name = cleanName(name);
   scheduleSave();
   onChangeFn();
@@ -273,6 +332,9 @@ export function renameFolder(id: number, name: string) {
 export function deleteFolder(id: number) {
   const pos = doc.folders.findIndex((f) => f.id === id);
   if (pos < 0 || id === homeId() || doc.folders.length <= 1) return;
+  // Deleting it would only mean `repairDoc` making an empty one on the next
+  // load, minus everything that had been dictated into it.
+  if (doc.folders[pos].kind === "plain") return;
   doc.folders.splice(pos, 1);
   history.delete(id);
   savedSel.delete(id);
@@ -327,6 +389,28 @@ export function flush(): Promise<unknown> {
 let cleared: { folderId: number; before: Line[] } | null = null;
 let clearedUntil = 0;
 let clearTimer: number | undefined;
+
+/**
+ * Add a dictation to the dictation pad.
+ *
+ * Newest first, with a blank line between entries: the pad is a log you go
+ * back to, and the thing you want is nearly always the last thing you said.
+ *
+ * It writes through the same model and save path as typing does, rather than
+ * touching `jotter.json` directly — one writer, so an append cannot be undone
+ * by whatever the editor next saves over it.
+ */
+export function appendDictation(text: string) {
+  const clean = text.trim();
+  if (!clean) return;
+  const f = doc.folders.find((x) => x.kind === "plain");
+  if (!f) return;
+  f.lines = withDictation(f.lines, clean);
+  scheduleSave();
+  // Redraw only if that pad is the one on screen.
+  if (doc.active === f.id) renderLines();
+  onChangeFn();
+}
 
 export const undoOffered = () => cleared !== null && Date.now() < clearedUntil;
 
@@ -454,13 +538,15 @@ function changed() {
 
 function renderLines() {
   const lines = folder().lines;
-  const { crossed } = crossings(lines);
+  const plain = isPlain();
+  const { crossed } = plain ? { crossed: lines.map(() => false) } : crossings(lines);
   const frag = document.createDocumentFragment();
   lines.forEach((l, i) => {
     const row = document.createElement("div");
     row.className = crossed[i] ? "j-line done" : "j-line";
-    row.dataset.depth = String(l.depth);
-    if (l.done) row.dataset.done = "1";
+    // A plain note is flat, whatever depth an earlier life left on its lines.
+    row.dataset.depth = plain ? "0" : String(l.depth);
+    if (!plain && l.done) row.dataset.done = "1";
     // An empty block needs a <br> to have height and to hold the caret.
     if (l.text) row.textContent = l.text;
     else row.append(document.createElement("br"));
@@ -474,6 +560,7 @@ function renderLines() {
 function layoutDots() {
   const lines = folder().lines;
   placeholder.hidden = !isPristine(lines);
+  if (isPlain()) return; // no bullets to place
   const rows = editor.children;
   // Mid-edit, before the input handler has reconciled the page with the model.
   if (rendered !== doc.active || rows.length !== lines.length) return;
@@ -748,6 +835,7 @@ function onKeyDown(e: KeyboardEvent) {
   if (e.isComposing || e.keyCode === 229) return;
   if (e.key === "Tab" && !e.metaKey && !e.ctrlKey && !e.altKey) {
     e.preventDefault(); // Tab never leaves the note
+    if (isPlain()) return; // a plain note has no depth to shift
     const sel = readSel();
     if (!sel) return;
     const [start, end] = ordered(sel.anchor, sel.focus);
@@ -802,6 +890,7 @@ function onCut(e: ClipboardEvent) {
 }
 
 function onDotDown(e: MouseEvent) {
+  if (isPlain()) return; // nothing to cross off
   const dot = (e.target as HTMLElement).closest<HTMLElement>(".j-dot");
   if (!dot) return;
   e.preventDefault(); // leave the caret and focus where they are

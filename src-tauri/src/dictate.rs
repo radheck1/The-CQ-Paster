@@ -566,6 +566,13 @@ pub fn end(app: &AppHandle, held: std::time::Duration) {
                             began.elapsed().as_secs_f32(),
                             text.len()
                         ));
+                        // The raw transcript goes to the Dictations jotpad
+                        // before it is pasted, so a word lost between here and
+                        // the document is still findable. The control panel
+                        // does the writing: it owns `jotter.json`, and a second
+                        // writer here would have its append saved over by
+                        // whatever the editor next wrote.
+                        let _ = app.emit_to("main", "dictate-transcript", text.clone());
                         crate::hook::paste_text(&text);
                     }
                     Ok(_) => crate::diag("dictate: nothing was heard"),
