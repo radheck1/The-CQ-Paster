@@ -10,6 +10,8 @@
 mod clipboard;
 mod hook;
 #[cfg(target_os = "macos")]
+mod dictate;
+#[cfg(target_os = "macos")]
 mod jotter;
 #[cfg(target_os = "macos")]
 mod reminders;
@@ -375,7 +377,7 @@ fn sync(app: &AppHandle, state: &Arc<AppState>) {
 /// task to the main-thread event loop and then block waiting for it — so
 /// calling them *from* the main thread deadlocks, and menu-event handlers run
 /// on the main thread.
-fn refresh_tray(app: &AppHandle, state: &Arc<AppState>) {
+pub(crate) fn refresh_tray(app: &AppHandle, state: &Arc<AppState>) {
     let app = app.clone();
     let state = state.clone();
     std::thread::spawn(move || {
@@ -473,6 +475,20 @@ fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::men
         Submenu::with_items(app, "Shake to open", true, &items)?
     };
 
+    // Dictation needs a 547 MB model before it can do anything, so the way in
+    // is a window that fetches it rather than a switch that would silently do
+    // nothing.
+    #[cfg(target_os = "macos")]
+    let dictate_i = MenuItemBuilder::with_id(
+        "dictate",
+        if dictate::ready() {
+            "Dictation\u{2026}"
+        } else {
+            "Set up dictation\u{2026}"
+        },
+    )
+    .build(app)?;
+
     MenuBuilder::new(app)
         .items(&[
             &open_i,
@@ -481,6 +497,8 @@ fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::men
             &mode_i,
             #[cfg(target_os = "macos")]
             &shake_sub,
+            #[cfg(target_os = "macos")]
+            &dictate_i,
             &autostart_i,
             &clear_i,
             &quit_i,
@@ -524,6 +542,11 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
                         sync(app, &menu_state);
                     }
                 }
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            if id == "dictate" {
+                dictate::open_window(app);
                 return;
             }
             #[cfg(target_os = "macos")]
@@ -872,6 +895,14 @@ pub fn run() {
             delete_folder,
             select_folder,
             show_main_window,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_open,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_models,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_download,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_cancel,
             #[cfg(target_os = "macos")]
             jotter::jotter_load,
             #[cfg(target_os = "macos")]

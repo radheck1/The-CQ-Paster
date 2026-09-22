@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dictate",
+  "description": "The dictation setup window, which only exists on macOS",
+  "platforms": ["macOS"],
+  "windows": ["dictate"],
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
+}

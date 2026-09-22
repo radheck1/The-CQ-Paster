@@ -71,6 +71,9 @@ objc2-foundation = { version = "0.3", features = [
 # Shotter: reading and copying a screenshot's extended attributes. Already built
 # for Tauri.
 libc = "0.2"
+# Dictation: checking a downloaded model against its published SHA-256.
+# Already built for Tauri, so it adds nothing to the build.
+sha2 = "0.10"
 # Local time for the reminder schedule. Already built for Tauri, with this
 # feature set, so it adds nothing to the build.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
