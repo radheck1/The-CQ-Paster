@@ -20,6 +20,7 @@
 pub mod capture;
 pub mod engine;
 pub mod indicator;
+pub mod vocab;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -595,6 +596,25 @@ fn end_indicator(app: &AppHandle) {
         f.store(false, std::sync::atomic::Ordering::SeqCst);
     }
     indicator::hide(app);
+}
+
+/// The vocabulary list, and how much of it fits.
+#[derive(Serialize)]
+pub struct VocabView {
+    terms: Vec<String>,
+    /// How many of them actually reach the decoder.
+    max: usize,
+}
+
+#[tauri::command]
+pub fn dictate_vocab() -> VocabView {
+    VocabView { terms: vocab::load().terms, max: vocab::MAX_TERMS }
+}
+
+#[tauri::command]
+pub fn dictate_set_vocab(terms: Vec<String>) -> Result<VocabView, String> {
+    vocab::save(&terms)?;
+    Ok(dictate_vocab())
 }
 
 /// Every microphone on this Mac, and which one dictation will use.

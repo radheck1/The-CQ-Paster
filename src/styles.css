@@ -2254,3 +2254,37 @@ body[data-window="listening"] #app {
   line-height: 1.4;
   color: var(--danger);
 }
+
+.dc-vocab {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.dc-vocab-box {
+  min-height: 62px;
+  max-height: 120px;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.dc-vocab-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--empty);
+}
+
+/* Over the budget is not a style choice: the terms past it never reach the
+   decoder at all. */
+.dc-vocab-note.over {
+  color: var(--danger);
+}

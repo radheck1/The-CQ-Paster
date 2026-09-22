@@ -970,6 +970,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             dictate::dictate_try,
             #[cfg(target_os = "macos")]
+            dictate::dictate_vocab,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_set_vocab,
+            #[cfg(target_os = "macos")]
             dictate::dictate_mics,
             #[cfg(target_os = "macos")]
             dictate::dictate_set_mic,

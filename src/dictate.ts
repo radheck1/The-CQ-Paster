@@ -19,6 +19,8 @@ type ModelStatus = {
   downloaded: number;
 };
 
+type VocabView = { terms: string[]; max: number };
+
 type MicInfo = { id: string; name: string; maker: string | null; is_default: boolean };
 type Mics = { devices: MicInfo[]; chosen: string | null; locked: boolean };
 
@@ -43,6 +45,7 @@ let heardError: string | null = null;
 let mics: Mics = { devices: [], chosen: null, locked: false };
 /** Set when a locked microphone was missing and CQ recorded off another. */
 let substituted: string | null = null;
+let vocab: VocabView = { terms: [], max: 48 };
 
 /** Sizes here are hundreds of megabytes, so one decimal place is plenty. */
 export function size(bytes: number): string {
@@ -55,6 +58,35 @@ export function size(bytes: number): string {
 export function percent(done: number, total: number): number {
   if (total <= 0) return 0;
   return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+}
+
+/** One term per line is what the box shows; the file keeps an array. */
+export function vocabText(terms: string[]): string {
+  return terms.join("\n");
+}
+
+/** Split what was typed back into terms, without deciding what is valid — the
+ *  backend does the trimming and de-duplicating, so both agree. */
+export function vocabTerms(text: string): string[] {
+  return text
+    .split("\n")
+    .map((t) => t.trim())
+    .filter((t) => t !== "");
+}
+
+/**
+ * What to say under the box. The cap is real: past it whisper keeps only the
+ * last part of the prompt and says so in a log nobody reads, so the count has
+ * to be visible here.
+ */
+export function vocabNote(count: number, max: number): string {
+  if (count === 0) return `Names CQ should expect to hear — one per line, up to ${max}.`;
+  if (count > max) {
+    const dropped = count - max;
+    return `${count} terms — only the first ${max} are used, so ${dropped} ${dropped === 1 ? "is" : "are"} ignored.`;
+  }
+  if (count === max) return `${count} terms — that is the limit.`;
+  return `${count} of ${max} terms.`;
 }
 
 /**
@@ -140,7 +172,13 @@ function render() {
       </div>
       ${
         allDone
-          ? `<div class="dc-mic">
+          ? `<div class="dc-vocab">
+               <label class="dc-mic-label" for="dc-vocab">Words to expect</label>
+               <textarea id="dc-vocab" class="dc-vocab-box" spellcheck="false"
+                 placeholder="Snowflake&#10;Pendo&#10;customer_id">${vocabText(vocab.terms)}</textarea>
+               <p class="dc-vocab-note${vocab.terms.length > vocab.max ? " over" : ""}">${vocabNote(vocab.terms.length, vocab.max)}</p>
+             </div>
+             <div class="dc-mic">
                <label class="dc-mic-row">
                  <span class="dc-mic-label">Microphone</span>
                  <select id="dc-mic" class="dc-select">
@@ -202,6 +240,15 @@ function render() {
   root.querySelector<HTMLButtonElement>("#dc-cancel")?.addEventListener("click", () => {
     void invoke("dictate_cancel");
   });
+  const box = root.querySelector<HTMLTextAreaElement>("#dc-vocab");
+  // Saved when the box loses focus, not on every keystroke: the list is a
+  // whole thought, and saving mid-word would write half a term to disk.
+  box?.addEventListener("blur", async () => {
+    const wanted = vocabTerms(box.value);
+    if (vocabText(wanted) === vocabText(vocab.terms)) return;
+    vocab = await invoke<VocabView>("dictate_set_vocab", { terms: wanted });
+    render();
+  });
   root.querySelector<HTMLSelectElement>("#dc-mic")?.addEventListener("change", async (e) => {
     const id = (e.target as HTMLSelectElement).value || null;
     // Following the system default and locking are contradictory, so choosing
@@ -242,6 +289,7 @@ async function refresh() {
   // Re-read every time: microphones come and go while the window is open.
   try {
     mics = await invoke<Mics>("dictate_mics");
+    vocab = await invoke<VocabView>("dictate_vocab");
   } catch {
     mics = { devices: [], chosen: null, locked: false };
   }

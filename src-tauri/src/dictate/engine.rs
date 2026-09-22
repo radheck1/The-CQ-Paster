@@ -159,19 +159,33 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     let port = ensure_running()?;
     // curl again, for the same reasons as the model download: it is already on
     // the machine, and multipart POST is one flag rather than a dependency.
+    let mut args: Vec<String> = vec![
+        "--silent".into(),
+        "--show-error".into(),
+        "--fail-with-body".into(),
+        "--max-time".into(),
+        TRANSCRIBE_TIMEOUT.as_secs().to_string(),
+        "--form".into(),
+        format!("file=@{}", wav.to_string_lossy()),
+        "--form".into(),
+        "response_format=json".into(),
+    ];
+    // The vocabulary, if there is one. Sent per request rather than fixed at
+    // startup so editing the list takes effect on the next dictation instead
+    // of the next launch.
+    let prompt = super::vocab::prompt_from(&super::vocab::load().terms);
+    if !prompt.is_empty() {
+        args.push("--form".into());
+        args.push(format!("prompt={prompt}"));
+        // Without this the prompt primes only the first 30-second window, so
+        // a longer dictation loses the vocabulary halfway through.
+        args.push("--form".into());
+        args.push("carry_initial_prompt=true".into());
+    }
+    args.push(format!("http://127.0.0.1:{port}/inference"));
+
     let out = Command::new("/usr/bin/curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--fail-with-body",
-            "--max-time",
-            &TRANSCRIBE_TIMEOUT.as_secs().to_string(),
-            "--form",
-            &format!("file=@{}", wav.to_string_lossy()),
-            "--form",
-            "response_format=json",
-            &format!("http://127.0.0.1:{port}/inference"),
-        ])
+        .args(&args)
         .output()
         .map_err(|e| format!("cannot reach the speech engine: {e}"))?;
     if !out.status.success() {
