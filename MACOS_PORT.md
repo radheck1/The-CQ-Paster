@@ -856,8 +856,16 @@ port the OS picks. That keeps C++ out of the Cargo build — Windows CI never se
 it — isolates an inference crash from the clipboard manager it lives in, and
 lets the 0.8 GB the model occupies be released by ending a process. It is built
 by `scripts/build-whisper-server.sh` and is **not in git**: ~20 MB, and
-rebuilding whisper would add another copy to history each time. CI runs
-`cargo build` and `cargo test`, which never look at an `externalBin`.
+rebuilding whisper would add another copy to history each time.
+
+**`externalBin` is validated while compiling, not while bundling.** Declaring
+it in the shared `tauri.conf.json` broke both CI jobs — macOS could not find
+the binary, and Windows went looking for a `whisper-server-x86_64-pc-windows-
+msvc.exe` that will never exist. It belongs in `tauri.macos.conf.json`, which
+Tauri merges only for macOS targets, so Windows never sees it at all. The same
+applies to `Entitlements.plist`. CI puts a placeholder in place on macOS: it
+never bundles or signs, so the file only has to exist for `cargo build` to
+reach the tests.
 
 `GGML_NATIVE=OFF` is required in that script. Left on, ggml detects the host CPU
 and passes `-mcpu=apple-m4` into the x86_64 half of the universal build, which

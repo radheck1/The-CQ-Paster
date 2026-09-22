@@ -302,15 +302,17 @@ npm install
 npm run tauri dev
 ```
 
-On macOS, dictation needs its engine built once before a bundle will include
-it. It is ~20 MB of binaries, kept out of git:
+On macOS, build dictation's speech engine once before anything else. It is
+~20 MB of binaries, kept out of git, and **the build will not compile without
+it** — Tauri checks that a bundled executable exists while compiling, not only
+when packaging:
 
 ```bash
 ./scripts/build-whisper-server.sh
 ```
 
-`npm run tauri dev` and `cargo test` work without it; only `npm run tauri
-build` needs it, and only for dictation.
+Windows never looks for it: the declaration lives in `tauri.macos.conf.json`,
+which Tauri merges only for macOS targets.
 
 Run the tests:
 

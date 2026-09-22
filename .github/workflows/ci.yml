@@ -50,6 +50,22 @@ jobs:
           workspaces: src-tauri -> target
           key: ${{ matrix.os }}
 
+      # `externalBin` is validated by tauri-build at COMPILE time, not only when
+      # bundling, so the file has to exist for `cargo build` to run at all. The
+      # real engine is ~20 MB and takes minutes to compile; CI never bundles or
+      # signs anything, so a placeholder is enough to get to the part that
+      # matters here — compiling and running the tests. A real bundle needs
+      # scripts/build-whisper-server.sh.
+      - name: Placeholder for the macOS speech engine
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p src-tauri/binaries
+          for triple in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
+            printf '#!/bin/sh\necho "CI placeholder, not the real engine" >&2\nexit 1\n' \
+              > "src-tauri/binaries/whisper-server-$triple"
+            chmod +x "src-tauri/binaries/whisper-server-$triple"
+          done
+
       - name: Install frontend dependencies
         run: npm ci
 
