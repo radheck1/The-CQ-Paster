@@ -1,4 +1,4 @@
-# CQ Paster — macOS port
+# cQ — macOS port
 
 Originally a handoff brief written from the Windows side, before any macOS work
 existed. **The port is now built and working**, so this has been revised into a
@@ -14,7 +14,7 @@ unchanged since v0.5.2 and still shipping.
 
 ## 1. What the app is
 
-**CQ Paster** is an ultra-minimal, hotkey-driven multi-slot clipboard manager.
+**cQ** is an ultra-minimal, hotkey-driven multi-slot clipboard manager.
 It lives in the tray/menu bar with almost no UI.
 
 | Chord | Windows | macOS |
@@ -470,14 +470,14 @@ Both halves survive a rebuild, so a permission granted once persists. See §7.2.
 ### 5.13 An old mounted DMG will be reinstalled by accident
 
 Several builds shipped with the identical filename. An earlier volume stayed
-mounted at `/Volumes/CQ Paster`, so the new one mounted as `/Volumes/CQ Paster 1`
+mounted at `/Volumes/cQ`, so the new one mounted as `/Volumes/cQ 1`
 and the app got dragged across from the **stale** volume — repeatedly, while
 every symptom pointed elsewhere.
 
 Before diagnosing an installed build, always confirm what is actually installed:
 
 ```bash
-codesign -d -r- "/Applications/CQ Paster.app" 2>&1 | tail -1
+codesign -d -r- "/Applications/cQ.app" 2>&1 | tail -1
 ```
 
 Stamping the DMG filename with a version or build id would prevent this.
@@ -485,7 +485,7 @@ Stamping the DMG filename with a version or build id would prevent this.
 ### 5.14 A replaced .app keeps running the old binary
 
 macOS keeps a running process alive when its bundle is overwritten. Installing
-over a running CQ Paster leaves the **old** binary running with the new one never
+over a running cQ leaves the **old** binary running with the new one never
 launched. Quit before installing.
 
 ---
@@ -522,7 +522,7 @@ launched. Quit before installing.
   menu is open. **No polling theme watcher is needed** — unlike the Windows
   `spawn_theme_watcher`. `tray-white.png` is unused on macOS.
 - **`set_tooltip` is a no-op on macOS** — `NSStatusItem` has no tooltip, so
-  "CQ Paster — *folder*" never appears. The `Folder: <name>` submenu label still
+  "cQ — *folder*" never appears. The `Folder: <name>` submenu label still
   answers "which folder am I in?".
 - **`ActivationPolicy::Accessory`** makes it a menu-bar app with no Dock icon.
   Without it Tauri registers as a regular foreground app. Setting `LSUIElement`
@@ -934,6 +934,90 @@ does, and only if nothing else claimed it meanwhile. It raises the tap's
 `injecting` guard, which now has a handle outside the worker because
 transcription cannot be done on the worker thread.
 
+**A spoken list goes onto separate lines**, when it is counted off — "three
+things I need. First, milk. Second, eggs. Third, bread." Each item starts a
+line; the lead-in sentence keeps its own. `dictate/listing.rs`, and there is a
+checkbox in the dictation window to turn it off.
+
+It splits the text in Rust and **does not ask the model**, which was not the
+first design. A second `llama-server` pass was built first, with an instruction
+permitting only whitespace and an exact guard — if the whitespace-separated
+tokens match, no word can have been lost. Measured against the real 7B on four
+real lists it got one right. On the others it **deleted the lead-in sentence**,
+stripped the full stops off the items, and on one reordered everything and
+invented a "second," that was never said. The guard caught all of them, so
+nothing was pasted wrong and almost nothing was formatted either. That is §7.8's
+sentence-loss failure reproducing on demand: a model rearranging text drops
+pieces.
+
+**The exact guard was also not sufficient**, which is the more surprising half.
+Ordinary prose came back cut into five pieces with every word intact — it
+passes an exact token comparison and is plainly worse than what went in. *The
+words being safe is not the text being safe.* Requiring every line to begin
+with the word that counts it off fixed that, and once that is the requirement
+the transformation is mechanical, so there is nothing left for a model to
+decide. Deterministic scores 7/7 on the same seven cases, costs nothing, never
+refuses, and keeps the lead-in.
+
+**"Two things, eggs and bacon" is deliberately left alone.** Its items carry no
+marker, so splitting them means deleting the "and" — and deleting words is the
+thing that loses sentences.
+
+**Two breaks minimum, measured.** At one break it split "Alright, one more test
+to see if it's working" in half. The `("one", "more")` marker was removed for
+the same reason. An ignored test, `report_against_every_recorded_dictation`,
+runs the splitter over the whole local `dictations.log` and prints what it
+would do; that is how both were found.
+
+**It fires rarely, and the reason is worth knowing.** Across 99 recorded
+dictations it fires **zero** times — no false positives, and no true ones
+either. Not because the rules are wrong but because dictating a sentence at a
+time means a list arrives as several dictations: the real log has "Okay, two
+notes. First, for the audio bars…" and "And then the blob…" as two separate
+entries. One dictation has to contain the whole list. Formatting a list spread
+across dictations is a larger feature and is not built.
+
+**A dictation joins what is already written, so it brings its own space.**
+Whisper hands back a sentence with nothing on either end, and dictating a
+sentence at a time into one box — the normal way to use this — welds the second
+onto the first: `…work on.The other thing is`. Before pasting, CQ asks the
+focused element for the character immediately in front of the caret and puts a
+space there if one is missing.
+
+The space goes on the **pasted** text, never on the document. Reaching into
+another application to add a character to what the user wrote is a far larger
+thing to do than adding one to our own, and it would need write access to a
+field CQ has no business editing.
+
+`AXSelectedTextRange` gives the caret, and `AXStringForRange` reads the single
+character before it — cheap, and it does not copy a document to look at its
+last letter. An application that answers `AXValue` but not the parameterised
+read falls back to copying the field and indexing it, capped at 50 000
+characters: this runs between the last word spoken and the paste, where a wait
+is felt.
+
+Both offsets are **UTF-16**, which is what the accessibility API counts in, so
+an emoji before the caret is two units and reading one of them gives half a
+surrogate pair. `before_index` takes the last two units and decodes what it
+can, which gets the whole character either way.
+
+There are three answers, for the same reason focus has three. `Start` means the
+field begins at the caret; `Unknown` means the application would not say. Both
+paste unchanged, but only `Unknown` is a failure — and it is the safe one,
+since doing nothing is exactly what CQ did before this existed. A silent
+application keeps the behaviour it had, so the change can only help.
+
+A dictation parked for a later click (§ the deferred paste) is parked
+**without** the space: where it will land is not known yet. The space is
+decided when the click arrives, against the field it is actually going into,
+and the pasteboard is rewritten then — without taking a new snapshot, since
+what is on it at that moment is the parked text and the snapshot worth keeping
+is already held.
+
+The diagnostics log says what it saw every time — `the caret sits after '.'`,
+`the app would not say what is before the caret` — because a paste that comes
+out wrong is otherwise unattributable.
+
 **Every dictation is recorded** in `dictations.log`: what was heard, what the
 clean-up made of it, which was pasted, and why if the guard refused. One JSON
 line each, capped at 512 KB with one previous generation. Written by Rust —
@@ -1075,7 +1159,7 @@ The certificate is a local keychain identity, not in the repo. To recreate:
 
 ```bash
 openssl req -x509 -newkey rsa:2048 -keyout k.pem -out c.pem -days 3650 \
-  -nodes -subj "/CN=CQ Paster Self Signed/O=CQ Paster/C=US" \
+  -nodes -subj "/CN=CQ Paster Self Signed/O=cQ/C=US" \
   -addext "basicConstraints=critical,CA:false" \
   -addext "keyUsage=critical,digitalSignature" \
   -addext "extendedKeyUsage=critical,codeSigning"
@@ -1108,7 +1192,7 @@ Self-signing does **nothing** for other people's Macs — the certificate is not
 trusted, so recipients still need right-click → **Open**, or:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/CQ Paster.app"
+xattr -dr com.apple.quarantine "/Applications/cQ.app"
 ```
 
 Proper distribution needs an **Apple Developer ID** ($99/yr) plus notarization.
@@ -1125,7 +1209,7 @@ CQ_Paster_0.5.1_x64-setup.exe      <- Windows asset
 CQ_Paster_0.5.1_universal.dmg      <- macOS asset
 ```
 
-Tauri emits `CQ Paster_<version>_universal.dmg` with spaces; rename it to match.
+Tauri emits `cQ_<version>_universal.dmg` with spaces; rename it to match.
 
 Two places must be updated when the Mac build first ships, both of which say
 "in development" until then:
@@ -1273,6 +1357,12 @@ Verified on macOS unless noted. Windows passes all of these.
       keeping their text — checked against a real file with five of them
 - [x] Other jotpads keep their bullets and crossing off
 - [x] The microphone list shows real devices; the chosen one is used and logged
+- [ ] **A second sentence dictated into the same box gets a space in front of
+      it** — the rules and the UTF-16 arithmetic are unit-tested, but which
+      applications answer `AXStringForRange` has not been checked by hand
+- [ ] **The first sentence into an empty field gets no leading space**
+- [ ] **A dictation that waited for a click gets its space against the field it
+      lands in**, not the one it was spoken at
 - [ ] **A quick tap of right `⌥` records nothing** — the 400 ms threshold is
       unit-tested against measured hold times, not checked by hand
 - [ ] **`⌥` plus a letter still types its special character** while dictation is

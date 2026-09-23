@@ -85,6 +85,9 @@ type CGEventTapCallBack =
 
 // Event types (`CGEventTypes.h`).
 const KCG_EVENT_KEY_DOWN: u32 = 10;
+/// A click finishing. Watched only so a dictation with nowhere to go can be
+/// pasted once there is somewhere — see `dictate::pending`.
+const KCG_EVENT_LEFT_MOUSE_UP: u32 = 2;
 const KCG_EVENT_FLAGS_CHANGED: u32 = 12;
 const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
 const KCG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
@@ -208,6 +211,8 @@ enum Action {
     StepFolder(isize),
     /// Cmd released: the chord is over, so the popup comes down.
     ChordEnd,
+    /// A click finished, and a dictation is waiting for somewhere to land.
+    Clicked,
     /// Right Option went down (`true`) or came up (`false`): hold to dictate.
     /// Carries where the pointer was, for the listening mark.
     Dictate { down: bool, x: f64, y: f64, shift: bool },
@@ -261,7 +266,7 @@ pub fn start(app: AppHandle, state: Arc<AppState>) {
 /// Is the process allowed to observe and synthesise input?
 ///
 /// In a dev build this is granted to the **terminal or IDE that launched the
-/// binary**, not to CQ Paster — so a rebuild can appear to lose the permission,
+/// binary**, not to cQ — so a rebuild can appear to lose the permission,
 /// and the entry to tick in System Settings is the terminal's.
 /// Both grants the tap needs: Accessibility to create it, Input Monitoring to
 /// receive anything through it.
@@ -376,7 +381,13 @@ fn run_tap(tx: Sender<Action>, injecting: Arc<AtomicBool>) {
 }
 
 fn install_tap(ctx: *mut Ctx) {
-    let mask = (1u64 << KCG_EVENT_KEY_DOWN) | (1u64 << KCG_EVENT_FLAGS_CHANGED);
+    // Mouse-up as well as keys. Unlike the mouse *moves* the shake detector
+    // needs — which is why that has a tap of its own (7.7) — clicks arrive a
+    // few times a minute, so this costs the tap that suppresses the chord keys
+    // effectively nothing.
+    let mask = (1u64 << KCG_EVENT_KEY_DOWN)
+        | (1u64 << KCG_EVENT_FLAGS_CHANGED)
+        | (1u64 << KCG_EVENT_LEFT_MOUSE_UP);
 
     let port = unsafe {
         CGEventTapCreate(
@@ -405,7 +416,7 @@ fn install_tap(ctx: *mut Ctx) {
 
     let source = unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), port, 0) };
     if source.is_null() {
-        eprintln!("[cq-paster] could not create a run loop source for the tap");
+        eprintln!("[cQ] could not create a run loop source for the tap");
         unsafe { CFRelease(port as CFTypeRef) };
         return;
     }
@@ -458,6 +469,15 @@ extern "C" fn tap_callback(
 
     // Let our own synthetic keystrokes through without reprocessing.
     if ctx.injecting.load(Ordering::SeqCst) {
+        return event;
+    }
+
+    if event_type == KCG_EVENT_LEFT_MOUSE_UP {
+        // One lock and nothing else in the common case, which is that no
+        // dictation is waiting. The work happens on the worker.
+        if crate::dictate::pending::is_waiting() {
+            let _ = ctx.tx.send(Action::Clicked);
+        }
         return event;
     }
 
@@ -686,7 +706,7 @@ fn describe(p: &crate::clipboard::SlotPreview) -> String {
 fn trace(msg: &str) {
     if debug_on() {
         eprintln!(
-            "[cq-paster] {msg}  (chord resets so far: {})",
+            "[cQ] {msg}  (chord resets so far: {})",
             CHORD_RESETS.load(Ordering::Relaxed)
         );
     }
@@ -703,8 +723,8 @@ fn worker(
     // SPIKE: when each modifier went down, so a release can report how long it
     // was held. Worker-side, so the callback never reads a clock.
     let mut held: Vec<(i64, std::time::Instant)> = Vec::new();
-    /// When the dictation trigger went down, so its release knows how long it
-    /// was held. `None` when nothing is being dictated.
+    // When the dictation trigger went down, so its release knows how long it
+    // was held. `None` when nothing is being dictated.
     let mut dictating: Option<std::time::Instant> = None;
 
     while let Ok(action) = rx.recv() {
@@ -714,6 +734,7 @@ fn worker(
                 show_popup(&app, &state, (x, y));
             }
             Action::ChordEnd => hide_popup(&app, &state),
+            Action::Clicked => crate::dictate::land_if_possible(&app),
             Action::Dictate { down, x, y, shift } => {
                 if down {
                     dictating = Some(std::time::Instant::now());
@@ -995,7 +1016,11 @@ pub(crate) fn cursor_location() -> (f64, f64) {
 /// and the original is put back — but only if nothing else claimed the
 /// pasteboard while we waited. Dictation that quietly ate the clipboard would
 /// be worse than dictation that did not work.
-pub(crate) fn paste_text(text: &str) {
+/// Put the text on the pasteboard without pasting, and hand back what was
+/// there. Used when a dictation has nowhere to land: it waits on the
+/// clipboard until a click gives it somewhere.
+/// A pasteboard holding nothing but this text.
+fn just_text(text: &str) -> clipboard::ClipSnapshot {
     let mut snap = clipboard::ClipSnapshot::default();
     snap.items.push(clipboard::ClipItem {
         types: vec![clipboard::ClipType {
@@ -1003,7 +1028,50 @@ pub(crate) fn paste_text(text: &str) {
             data: text.as_bytes().to_vec(),
         }],
     });
+    snap
+}
 
+pub(crate) fn park_text(text: &str) -> Option<clipboard::ClipSnapshot> {
+    let borrowed = capture_stable(None);
+    if let Err(e) = clipboard::restore(&just_text(text)) {
+        crate::diag(&format!("dictate: could not park the text: {e}"));
+    }
+    borrowed
+}
+
+/// Change what is parked. Takes no snapshot of its own — what was on the
+/// pasteboard before is the parked text, which is not worth keeping, and the
+/// caller still holds the one snapshot that matters.
+pub(crate) fn repark_text(text: &str) {
+    if let Err(e) = clipboard::restore(&just_text(text)) {
+        crate::diag(&format!("dictate: could not add the space: {e}"));
+    }
+}
+
+/// Paste what is already on the pasteboard, then put `borrowed` back.
+pub(crate) fn paste_parked(borrowed: Option<clipboard::ClipSnapshot>) {
+    let ours = clipboard::change_count();
+    let guard = INJECTING.get();
+    if let Some(g) = guard {
+        g.store(true, Ordering::SeqCst);
+    }
+    inject_paste();
+    thread::sleep(Duration::from_millis(INJECT_GUARD_MS));
+    if let Some(g) = guard {
+        g.store(false, Ordering::SeqCst);
+    }
+    if let Some(prev) = borrowed {
+        thread::sleep(PASTE_HANDBACK_DELAY);
+        if clipboard::change_count() == ours {
+            if let Err(e) = clipboard::restore(&prev) {
+                crate::diag(&format!("dictate: could not hand the pasteboard back: {e}"));
+            }
+        }
+    }
+}
+
+pub(crate) fn paste_text(text: &str) {
+    let snap = just_text(text);
     let borrowed = capture_stable(None);
     if let Err(e) = clipboard::restore(&snap) {
         crate::diag(&format!("dictate: could not put the text on the pasteboard: {e}"));

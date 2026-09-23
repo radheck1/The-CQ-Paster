@@ -1,4 +1,4 @@
-//! CQ Paster — an ultra-minimal multi-slot clipboard manager.
+//! cQ — an ultra-minimal multi-slot clipboard manager.
 //!
 //! Lives in the tray. A global keyboard hook (see [`hook`]) implements the
 //! `Ctrl+<N>+C` / `Ctrl+<N>+V` chords over 9 clipboard slots. On Windows there
@@ -75,7 +75,7 @@ fn ensure_data_dir() {
     let dir = data_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!(
-            "[cq-paster] cannot create data directory {} — slots will not persist: {e}",
+            "[cQ] cannot create data directory {} — slots will not persist: {e}",
             dir.display()
         );
     }
@@ -95,7 +95,7 @@ pub fn diag(msg: &str) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let line = format!("[{secs}] {msg}");
-    eprintln!("[cq-paster] {line}");
+    eprintln!("[cQ] {line}");
     let path = data_dir().join("diagnostics.log");
     roll_if_big(&path);
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path)
@@ -388,6 +388,90 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// Where to put a window of `size` so it hangs under `pointer` without leaving
+/// `area`.
+///
+/// The pointer ends up at the **top centre** of the window, so it drops from
+/// where the shake happened the way a menu drops from a click. Centred on the
+/// pointer instead, half of it sits above, covering whatever was being pointed
+/// at.
+///
+/// AppKit coordinates: y counts up from the bottom, so the top edge is
+/// `origin.y + height`, and hanging below the pointer means `origin.y =
+/// pointer.y - height`. `area` is the visible frame, so the menu bar and Dock
+/// are already excluded.
+///
+/// Pure, so the clamping can be tested without a screen. Getting it wrong puts
+/// the window where it cannot be reached.
+#[cfg(target_os = "macos")]
+pub(crate) fn under_pointer(area: (f64, f64, f64, f64), size: (f64, f64), pointer: (f64, f64)) -> (f64, f64) {
+    let (ax, ay, aw, ah) = area;
+    let (w, h) = size;
+    // A window larger than the screen cannot be fitted; putting its origin at
+    // the corner at least keeps its top-left reachable.
+    let x = if w >= aw { ax } else { (pointer.0 - w / 2.0).clamp(ax, ax + aw - w) };
+    // Shaking near the bottom leaves no room below, and the clamp lifts it
+    // back up — staying on screen matters more than staying under the pointer.
+    let y = if h >= ah { ay } else { (pointer.1 - h).clamp(ay, ay + ah - h) };
+    (x, y)
+}
+
+/// Show the control panel where the pointer is.
+///
+/// Used by the shake gesture, which means "open, here" — opening it wherever it
+/// happened to be last is the thing that makes a shake feel like it did not
+/// work.
+#[cfg(target_os = "macos")]
+pub(crate) fn show_main_at_pointer(app: &AppHandle) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSEvent, NSScreen, NSWindow};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(win) = handle.get_webview_window("main") else { return };
+        let Ok(ptr) = win.ns_window() else { return };
+        if ptr.is_null() {
+            return;
+        }
+        // Safe: `run_on_main_thread` guarantees exactly that.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let ns: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+        let pointer = NSEvent::mouseLocation();
+
+        let screens = NSScreen::screens(mtm);
+        let area = screens
+            .iter()
+            .find(|s| {
+                let f = s.frame();
+                pointer.x >= f.origin.x
+                    && pointer.x <= f.origin.x + f.size.width
+                    && pointer.y >= f.origin.y
+                    && pointer.y <= f.origin.y + f.size.height
+            })
+            .or_else(|| NSScreen::mainScreen(mtm))
+            .map(|s| s.visibleFrame());
+        let Some(area) = area else { return };
+
+        let frame = ns.frame();
+        let (x, y) = under_pointer(
+            (area.origin.x, area.origin.y, area.size.width, area.size.height),
+            (frame.size.width, frame.size.height),
+            (pointer.x, pointer.y),
+        );
+        // Placed before it is shown, so it never appears where it was last and
+        // then jumps.
+        ns.setFrame_display(NSRect::new(NSPoint::new(x, y), NSSize::new(frame.size.width, frame.size.height)), false);
+        diag(&format!(
+            "shake: panel at {x:.0},{y:.0} for a pointer at {:.0},{:.0}",
+            pointer.x, pointer.y
+        ));
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    });
+}
+
 /// Persist, push the new state to the frontend, and re-skin the tray. Call
 /// after any change to folders or slots.
 fn sync(app: &AppHandle, state: &Arc<AppState>) {
@@ -413,7 +497,7 @@ pub(crate) fn refresh_tray(app: &AppHandle, state: &Arc<AppState>) {
             let _ = tray.set_menu(Some(menu));
         }
         let name = state.folders.lock().unwrap().active_name();
-        let _ = tray.set_tooltip(Some(format!("CQ Paster — {name}")));
+        let _ = tray.set_tooltip(Some(format!("cQ — {name}")));
     });
 }
 
@@ -482,7 +566,7 @@ fn tray_menu(app: &AppHandle, state: &Arc<AppState>) -> tauri::Result<tauri::men
     // Scoped to the active folder, and says so.
     let clear_i =
         MenuItemBuilder::with_id("clear", format!("Clear slots in \"{active_name}\"")).build(app)?;
-    let quit_i = MenuItemBuilder::with_id("quit", "Quit CQ Paster").build(app)?;
+    let quit_i = MenuItemBuilder::with_id("quit", "Quit cQ").build(app)?;
 
     // Shake the mouse to open the control panel. macOS only: it reads the mouse
     // through an event tap of its own.
@@ -589,7 +673,7 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
 
     let menu = tray_menu(app, &state)?;
     let menu_state = state.clone();
-    let tooltip = format!("CQ Paster — {}", state.folders.lock().unwrap().active_name());
+    let tooltip = format!("cQ — {}", state.folders.lock().unwrap().active_name());
 
     // Match the tray icon to the taskbar's light/dark theme.
     #[cfg(windows)]
@@ -601,10 +685,13 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
 
     let builder = TrayIconBuilder::with_id("cq-tray").icon(tray_icon);
 
-    // Template image: macOS tints it for the current menu-bar appearance, so
-    // macOS needs no equivalent of the Windows `spawn_theme_watcher` polling.
+    // Not a template: the menu-bar icon carries CQ's own colours, so macOS
+    // must draw it as it is rather than tinting it to match the bar. That also
+    // means it looks the same in light and dark, which is the point of a
+    // coloured mark — but it gives up the inverted state macOS draws while the
+    // menu is open, where a template icon flips and this one will not.
     #[cfg(target_os = "macos")]
-    let builder = builder.icon_as_template(true);
+    let builder = builder.icon_as_template(false);
 
     builder
         .tooltip(tooltip)
@@ -704,15 +791,15 @@ fn build_tray(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
 
 /// The menu-bar icon.
 ///
-/// Registered as a template image (see `icon_as_template` in `build_tray`), so
-/// macOS tints it to match the menu bar automatically — light, dark, and the
-/// inverted state while the menu is open, which manual light/dark swapping gets
-/// wrong. Template images are drawn from alpha alone, so the black artwork is
-/// the correct source for every appearance and `tray-white.png` is unused here.
+/// CQ's own colours rather than a template. A template image is drawn from its
+/// alpha alone and tinted by macOS, which handles light, dark and the inverted
+/// state while the menu is open without being asked — everything a coloured
+/// icon gives up. It is kept here (`tray-black.png`) in case the colour turns
+/// out not to read at menu-bar size.
 #[cfg(target_os = "macos")]
 fn macos_tray_icon() -> tauri::image::Image<'static> {
-    static BLACK: &[u8] = include_bytes!("../icons/tray-black.png");
-    tauri::image::Image::from_bytes(BLACK).expect("decode tray icon")
+    static COLOUR: &[u8] = include_bytes!("../icons/tray-colour.png");
+    tauri::image::Image::from_bytes(COLOUR).expect("decode tray icon")
 }
 
 /// Read the taskbar (system) light/dark setting. True = light taskbar.
@@ -999,6 +1086,14 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             dictate::dictate_set_vocab,
             #[cfg(target_os = "macos")]
+            dictate::dictate_suggestions,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_decide,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_lists,
+            #[cfg(target_os = "macos")]
+            dictate::dictate_set_lists,
+            #[cfg(target_os = "macos")]
             dictate::dictate_mics,
             #[cfg(target_os = "macos")]
             dictate::dictate_set_mic,
@@ -1133,5 +1228,114 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running CQ Paster");
+        .expect("error while running cQ");
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod placing_the_panel {
+    use super::under_pointer;
+    const AREA: (f64, f64, f64, f64) = (0.0, 0.0, 1512.0, 945.0);
+    const PANEL: (f64, f64) = (442.0, 535.0);
+
+    #[test]
+    fn it_hangs_below_the_pointer_when_there_is_room() {
+        // Horizontally centred on the pointer with its top edge there, so the
+        // window drops away from what was being pointed at rather than over it.
+        let (x, y) = under_pointer(AREA, PANEL, (756.0, 600.0));
+        assert_eq!(x, 756.0 - PANEL.0 / 2.0);
+        assert_eq!(y + PANEL.1, 600.0, "the top edge belongs at the pointer");
+    }
+
+    #[test]
+    fn shaking_low_on_the_screen_lifts_it_back_into_view() {
+        // No room below at all, so it cannot hang under the pointer. Staying
+        // on screen wins.
+        let (_, y) = under_pointer(AREA, PANEL, (756.0, 40.0));
+        assert_eq!(y, AREA.1);
+    }
+
+    #[test]
+    fn it_never_leaves_the_screen() {
+        for p in [(0.0, 0.0), (1512.0, 0.0), (0.0, 945.0), (1512.0, 945.0), (1512.0, 472.0)] {
+            let (x, y) = under_pointer(AREA, PANEL, p);
+            assert!(x >= AREA.0, "{p:?} put it off the left");
+            assert!(y >= AREA.1, "{p:?} put it off the bottom");
+            assert!(x + PANEL.0 <= AREA.0 + AREA.2, "{p:?} put it off the right");
+            assert!(y + PANEL.1 <= AREA.1 + AREA.3, "{p:?} put it off the top");
+        }
+    }
+
+    #[test]
+    fn a_screen_that_is_not_at_the_origin_is_handled() {
+        let area = (1512.0, -200.0, 1920.0, 1080.0);
+        let (x, y) = under_pointer(area, PANEL, (1512.0, -200.0));
+        assert!(x >= 1512.0 && y >= -200.0);
+        let (x, y) = under_pointer(area, PANEL, (3432.0, 880.0));
+        assert!(x + PANEL.0 <= 3432.0 && y + PANEL.1 <= 880.0);
+    }
+
+    #[test]
+    fn a_window_taller_than_the_screen_still_has_a_reachable_corner() {
+        let (x, y) = under_pointer(AREA, (2000.0, 2000.0), (700.0, 400.0));
+        assert_eq!((x, y), (AREA.0, AREA.1));
+    }
+}
+
+/// Does every macOS-only command in the handler list carry its own gate?
+///
+/// `generate_handler!` takes a `#[cfg]` per entry, and the attribute applies
+/// to the **one** entry after it. Adding a command by inserting a line before
+/// an existing one therefore steals that entry's gate and leaves two commands
+/// ungated — which compiles perfectly on macOS and breaks the Windows build,
+/// where the module does not exist. That is exactly how it broke, and nothing
+/// on a Mac can notice it: `cargo check` here is happy either way.
+///
+/// So the source is read at compile time and checked. It is a crude test, and
+/// it is the only kind that can catch this without a Windows machine.
+#[cfg(test)]
+mod windows_build {
+    /// Modules that only exist on macOS. A command from one of these in the
+    /// handler list must be gated.
+    const MAC_ONLY: &[&str] = &["dictate::", "jotter::", "reminders::", "shake::", "shotter::"];
+    const GATE: &str = "#[cfg(target_os = \"macos\")]";
+
+    #[test]
+    fn every_macos_only_command_is_gated() {
+        let source = include_str!("lib.rs");
+        let lines: Vec<&str> = source.lines().map(str::trim).collect();
+        let mut ungated = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            // A registration line: "dictate::dictate_mics," and nothing else.
+            if !line.ends_with(',') || line.contains(' ') {
+                continue;
+            }
+            if !MAC_ONLY.iter().any(|m| line.starts_with(m)) {
+                continue;
+            }
+            let gated = i > 0 && lines[i - 1] == GATE;
+            if !gated {
+                ungated.push(format!("line {}: {line}", i + 1));
+            }
+        }
+        assert!(
+            ungated.is_empty(),
+            "these commands would not compile on Windows — each needs its own \
+             {GATE} on the line above it:\n  {}",
+            ungated.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn the_check_would_actually_catch_it() {
+        // Guards the guard: if the line-shape match above ever stops matching
+        // a registration line, the test passes vacuously and protects nothing.
+        let source = include_str!("lib.rs");
+        let found = source
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.ends_with(',') && !l.contains(' ') && l.starts_with("dictate::"))
+            .count();
+        assert!(found > 10, "only matched {found} dictate commands — the shape test is wrong");
+    }
+}
+

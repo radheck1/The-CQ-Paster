@@ -35,6 +35,10 @@ const MAX_TERM_LEN: usize = 48;
 #[serde(default)]
 pub struct Vocab {
     pub terms: Vec<String>,
+    /// Suggestions that were turned down. Kept so the same word is not
+    /// offered every time CQ looks — a suggestion list that keeps proposing
+    /// what has already been refused stops being read.
+    pub dismissed: Vec<String>,
 }
 
 fn file() -> PathBuf {
@@ -45,13 +49,17 @@ pub fn load() -> Vocab {
     std::fs::read(file())
         .ok()
         .and_then(|b| serde_json::from_slice::<Vocab>(&b).ok())
-        .map(|v| Vocab { terms: clean(&v.terms) })
+        .map(|v| Vocab { terms: clean(&v.terms), dismissed: v.dismissed })
         .unwrap_or_default()
 }
 
 pub fn save(terms: &[String]) -> Result<(), String> {
-    let v = Vocab { terms: clean(terms) };
-    let body = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
+    let existing = load();
+    save_all(&Vocab { terms: clean(terms), dismissed: existing.dismissed })
+}
+
+pub fn save_all(v: &Vocab) -> Result<(), String> {
+    let body = serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?;
     let path = file();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);

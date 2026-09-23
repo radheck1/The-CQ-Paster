@@ -1,6 +1,6 @@
 //! Guided setup for the macOS permissions the hotkeys need.
 //!
-//! CQ Paster needs two separate grants, and neither is optional:
+//! cQ needs two separate grants, and neither is optional:
 //!
 //! * **Accessibility** — required to create the `CGEventTap` at all.
 //! * **Input Monitoring** — required to *read* key events through it.
@@ -12,7 +12,7 @@
 //! # Why this re-runs after every reinstall
 //!
 //! The build is ad-hoc signed, so its code identity changes with every rebuild.
-//! macOS keys these grants to that identity, so a reinstalled CQ Paster does not
+//! macOS keys these grants to that identity, so a reinstalled cQ does not
 //! match the entry already sitting in System Settings. The entry still *looks*
 //! enabled while granting nothing, and from here that is indistinguishable from
 //! never having been granted — both simply read as "not trusted". So the alerts
@@ -85,8 +85,8 @@ mod macos {
 
         fn title(self) -> &'static str {
             match self {
-                Permission::Accessibility => "CQ Paster needs Accessibility access",
-                Permission::InputMonitoring => "CQ Paster needs Input Monitoring access",
+                Permission::Accessibility => "cQ needs Accessibility access",
+                Permission::InputMonitoring => "cQ needs Input Monitoring access",
             }
         }
 
@@ -97,21 +97,21 @@ mod macos {
                 Permission::Accessibility => {
                     "Without it, the Cmd+<N>+C and Cmd+<N>+V hotkeys cannot run.\n\n\
                      1. Click \"Open Settings\" below.\n\
-                     2. Turn on CQ Paster in the list.\n\n\
+                     2. Turn on cQ in the list.\n\n\
                      Already listed? Switch it OFF and ON again — after an update \
                      macOS keeps the old entry, which looks enabled but no longer \
                      works.\n\n\
-                     No restart needed; CQ Paster picks it up on its own."
+                     No restart needed; cQ picks it up on its own."
                 }
                 Permission::InputMonitoring => {
-                    "Accessibility is done. One more: Input Monitoring lets CQ Paster \
+                    "Accessibility is done. One more: Input Monitoring lets cQ \
                      read the number and letter keys in a hotkey.\n\n\
                      1. Click \"Open Settings\" below.\n\
-                     2. Turn on CQ Paster in the list.\n\n\
+                     2. Turn on cQ in the list.\n\n\
                      Already listed? Switch it OFF and ON again — after an update \
                      macOS keeps the old entry, which looks enabled but no longer \
                      works.\n\n\
-                     No restart needed; CQ Paster picks it up on its own."
+                     No restart needed; cQ picks it up on its own."
                 }
             }
         }

@@ -328,7 +328,8 @@ pub fn start(app: &AppHandle) {
     std::thread::spawn(move || {
         while rx.recv().is_ok() {
             crate::diag("shake: opening the control panel");
-            crate::show_main(&handle);
+            // Where the shake happened, not where the window was left.
+            crate::show_main_at_pointer(&handle);
         }
     });
     std::thread::spawn(move || run_tap(tx));

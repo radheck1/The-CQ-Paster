@@ -19,9 +19,14 @@
 
 pub mod capture;
 pub mod engine;
+pub mod focus;
+pub mod harvest;
+pub mod pending;
 pub mod indicator;
+pub mod listing;
 pub mod record;
 pub mod rewrite;
+pub mod spacing;
 pub mod vocab;
 
 use std::path::{Path, PathBuf};
@@ -394,8 +399,12 @@ pub fn open_window(app: &AppHandle) {
     let built =
         tauri::WebviewWindowBuilder::new(app, WINDOW, tauri::WebviewUrl::App("index.html".into()))
             .title("Dictation")
-            .inner_size(480.0, 340.0)
-            .min_inner_size(420.0, 300.0)
+            // Sized for what the window actually holds now: two models, the
+            // vocabulary box and its suggestions, the microphone chooser and
+            // the microphone check. 340 points was set when it only had the
+            // download in it.
+            .inner_size(520.0, 680.0)
+            .min_inner_size(460.0, 480.0)
             .decorations(false)
             .visible(false)
             .build();
@@ -534,6 +543,17 @@ fn run_try(app: &AppHandle, seconds: f64) -> Result<String, String> {
     Ok(text)
 }
 
+/// Heard when the microphone opens. Short and light: it fires every time the
+/// trigger is held, including the accidental taps that record nothing, so
+/// anything with weight to it would wear out quickly.
+const SOUND_START: &str = "Pop";
+/// Heard when the words land, not when the key comes up. It marks the moment
+/// the dictation is actually finished and the text is in the document — the
+/// release is something the speaker already knows they did, and the second or
+/// two of work after it is exactly the part worth being told about without
+/// having to watch for it.
+const SOUND_END: &str = "Frog";
+
 /// A hold shorter than this is a brush against the key, not an intention to
 /// speak. Measured on this machine: deliberate taps came in at 134-282 ms and
 /// deliberate holds at 2462-4727 ms, so the gap is wide and this sits in it.
@@ -553,6 +573,11 @@ pub fn begin(app: &AppHandle, at: (f64, f64)) {
     // launch against 244-355 ms once warm.
     rewrite::prewarm();
     indicator::show(app, at);
+    crate::reminders::play(app, SOUND_START.into());
+    // A new dictation supersedes one still looking for somewhere to land: the
+    // clipboard is about to be needed, and pasting the older one afterwards
+    // would put the wrong words in.
+    pending::clear();
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     *FOLLOWING.lock().unwrap() = Some(running.clone());
     indicator::follow(app.clone(), running);
@@ -560,6 +585,38 @@ pub fn begin(app: &AppHandle, at: (f64, f64)) {
         crate::diag(&format!("dictate: could not start listening: {e}"));
         end_indicator(app);
     }
+}
+
+/// A click landed while a dictation was waiting for somewhere to go.
+///
+/// Runs on the hook's worker, so it must not hold it: the settle delay and the
+/// paste both go to a thread of their own.
+pub fn land_if_possible(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        // The focus moves after the click, not with it. Asking straight away
+        // reports what was focused *before* — which is the thing that was not
+        // editable, so the wait would never end.
+        std::thread::sleep(pending::SETTLE);
+        let look = focus::look();
+        match pending::on_click(look.target) {
+            pending::Next::Paste(text, borrowed) => {
+                crate::diag("dictate: somewhere to paste at last");
+                // Where it would land was unknown when it was parked, so
+                // both the listing and the space are decided now, against the
+                // field it is actually going into.
+                let ready = text_for(&look, text.clone());
+                if ready != text {
+                    crate::hook::repark_text(&ready);
+                }
+                crate::hook::paste_parked(borrowed);
+                crate::reminders::play(&app, SOUND_END.into());
+            }
+            // Nothing to do: the text stays on the clipboard either way, and
+            // `on_click` has already logged giving up.
+            pending::Next::GaveUp | pending::Next::Hold => {}
+        }
+    });
 }
 
 /// The trigger came up. Transcribes and pastes, on a thread of its own: this
@@ -616,7 +673,29 @@ pub fn end(app: &AppHandle, held: std::time::Duration, as_heard: bool) {
                         // still sitting there is the first thing they would
                         // see instead of their words.
                         done(&app);
-                        crate::hook::paste_text(&out);
+                        // Where can it go? Pasting into a Finder window or a
+                        // video throws the words away; better to hold them on
+                        // the clipboard until there is somewhere to put them.
+                        //
+                        // Only a clear yes pastes now. An application that
+                        // says nothing about its focus is treated as nowhere,
+                        // which is the cautious reading and means some
+                        // dictations wait that would previously have landed.
+                        let look = focus::look();
+                        match look.target {
+                            focus::Target::Editable => {
+                                let out = text_for(&look, out);
+                                crate::reminders::play(&app, SOUND_END.into());
+                                crate::hook::paste_text(&out);
+                            }
+                            other => {
+                                crate::diag(&format!(
+                                    "dictate: nowhere to paste ({other:?}) — waiting for a click"
+                                ));
+                                let borrowed = crate::hook::park_text(&out);
+                                pending::begin(out.clone(), borrowed);
+                            }
+                        }
                     }
                     Ok(_) => {
                         crate::diag("dictate: nothing was heard");
@@ -636,6 +715,24 @@ pub fn end(app: &AppHandle, held: std::time::Duration, as_heard: bool) {
             }
         }
     });
+}
+
+/// What actually goes into the field: a spoken list broken onto lines, then
+/// joined to whatever is already written there.
+///
+/// Both paste paths come through here so they cannot drift apart — a dictation
+/// that waited for a click should land exactly as one that did not.
+fn text_for(look: &focus::Look, out: String) -> String {
+    crate::diag(&format!(
+        "dictate: pasting into {} ({:?})",
+        look.role.as_deref().unwrap_or("an app that gave no role"),
+        look.target
+    ));
+    let out = match listing::format(&out) {
+        Some(listed) => listed,
+        None => out,
+    };
+    spacing::lead(look.before, out)
 }
 
 /// The follower for the recording in progress, so a release can retire it.
@@ -668,6 +765,105 @@ pub fn dictate_set_vocab(terms: Vec<String>) -> Result<VocabView, String> {
     Ok(dictate_vocab())
 }
 
+/// A word CQ noticed and thinks is worth teaching the speech model.
+#[derive(Serialize)]
+pub struct Suggestion {
+    term: String,
+    /// Why it stood out, in the user's words — the list is asking for a
+    /// decision, and "an identifier" is a reason where "found in your
+    /// clipboard" is not.
+    reason: &'static str,
+    /// Where it came from, so an odd suggestion can be traced.
+    from: &'static str,
+    count: usize,
+}
+
+fn reason_for(w: harvest::Why) -> &'static str {
+    match w {
+        harvest::Why::Identifier => "looks like a column or table name",
+        harvest::Why::Dotted => "a name with a dot in it",
+        harvest::Why::CamelCase => "a capital inside the word",
+        harvest::Why::Acronym => "spoken as letters",
+        harvest::Why::ProperNoun => "a name",
+    }
+}
+
+/// Look through what CQ already holds for words worth teaching.
+///
+/// Nothing here is added on its own. Priming whisper with a wrong term makes
+/// every later dictation worse, so a bad automatic entry is not neutral — the
+/// user ticks what they want.
+#[tauri::command]
+pub fn dictate_suggestions(state: tauri::State<'_, std::sync::Arc<crate::AppState>>) -> Vec<Suggestion> {
+    use std::collections::HashMap;
+    let mut slots: HashMap<String, (harvest::Why, usize)> = HashMap::new();
+    let mut notes: HashMap<String, (harvest::Why, usize)> = HashMap::new();
+
+    // What has been copied. Text only: an image or a file list has no words.
+    {
+        let folders = state.folders.lock().unwrap();
+        for snap in folders.all_snapshots() {
+            if let Some(text) = crate::clipboard::full_text(&snap) {
+                harvest::from_text(&text, &mut slots);
+            }
+        }
+    }
+
+    // What has been written in Jotter. Read from the file rather than asked of
+    // the window, so this works with the control panel closed.
+    if let Ok(Some(raw)) = crate::jotter::jotter_load() {
+        if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(folders) = doc.get("folders").and_then(|f| f.as_array()) {
+                for f in folders {
+                    if let Some(lines) = f.get("lines").and_then(|l| l.as_array()) {
+                        for l in lines {
+                            if let Some(t) = l.get("text").and_then(|t| t.as_str()) {
+                                harvest::from_text(t, &mut notes);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let v = vocab::load();
+    let mut out: Vec<Suggestion> = Vec::new();
+    for (found, from) in [(slots, "what you copied"), (notes, "your jotpads")] {
+        for c in harvest::rank(found, &v.terms, &v.dismissed) {
+            // The same word from both sources is one suggestion, not two.
+            if out.iter().any(|s| s.term.eq_ignore_ascii_case(&c.term)) {
+                continue;
+            }
+            out.push(Suggestion {
+                term: c.term,
+                reason: reason_for(c.why),
+                from,
+                count: c.count,
+            });
+        }
+    }
+    // More than this is a wall of words rather than a decision.
+    out.truncate(24);
+    out
+}
+
+/// Accept a suggestion, or turn it down for good.
+#[tauri::command]
+pub fn dictate_decide(term: String, keep: bool) -> Result<VocabView, String> {
+    let mut v = vocab::load();
+    if keep {
+        if !v.terms.iter().any(|t| t.eq_ignore_ascii_case(&term)) {
+            v.terms.push(term);
+        }
+    } else if !v.dismissed.iter().any(|t| t.eq_ignore_ascii_case(&term)) {
+        v.dismissed.push(term);
+    }
+    v.terms = vocab::clean(&v.terms);
+    vocab::save_all(&v)?;
+    Ok(dictate_vocab())
+}
+
 /// Every microphone on this Mac, and which one dictation will use.
 #[derive(Serialize)]
 pub struct Mics {
@@ -675,6 +871,20 @@ pub struct Mics {
     /// The chosen device's id, or `None` for "follow the system default".
     chosen: Option<String>,
     locked: bool,
+}
+
+/// Is automatic list formatting on?
+#[tauri::command]
+pub fn dictate_lists() -> bool {
+    listing::enabled()
+}
+
+/// Turn automatic list formatting on or off. The escape hatch: the feature
+/// guesses which dictations are lists, and a guess that keeps being wrong
+/// should be switchable off without a new build.
+#[tauri::command]
+pub fn dictate_set_lists(on: bool) -> Result<(), String> {
+    listing::set_enabled(on)
 }
 
 #[tauri::command]

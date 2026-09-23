@@ -1,13 +1,13 @@
 [package]
-name = "cq-paster"
+name = "cQ"
 version = "0.6.0"
-description = "CQ Paster - an ultra-minimal multi-slot clipboard manager"
+description = "cQ - an ultra-minimal multi-slot clipboard manager"
 authors = ["Garrett"]
 edition = "2021"
 
 [lib]
 # The `_lib` suffix keeps the lib name distinct from the bin name on Windows.
-name = "cq_paster_lib"
+name = "cq_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

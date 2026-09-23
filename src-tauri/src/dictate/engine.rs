@@ -49,7 +49,7 @@ fn sidecar() -> Option<PathBuf> {
     if bundled.exists() {
         return Some(bundled);
     }
-    // Development: target/debug/cq-paster -> src-tauri/binaries/
+    // Development: target/debug/cQ -> src-tauri/binaries/
     let dev = dir
         .parent()
         .and_then(|p| p.parent())

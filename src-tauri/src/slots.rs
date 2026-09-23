@@ -68,6 +68,12 @@ impl SlotStore {
         self.items.iter().filter(|i| i.is_some()).count()
     }
 
+    /// Every snapshot this store holds. Used by dictation, which reads what
+    /// has been copied looking for names worth teaching the speech model.
+    pub fn snapshots(&self) -> impl Iterator<Item = &ClipSnapshot> {
+        self.items.iter().flatten().map(|it| &it.snapshot)
+    }
+
     pub fn dtos(&self) -> Vec<SlotDto> {
         (1..=9)
             .map(|n| match &self.items[n - 1] {
@@ -194,6 +200,14 @@ impl FolderStore {
     }
 
     /// A clone of the active folder's slots, for stashing before a clear.
+    /// Every snapshot in every folder, not just the open one.
+    pub fn all_snapshots(&self) -> Vec<ClipSnapshot> {
+        self.folders
+            .iter()
+            .flat_map(|f| f.slots.snapshots().cloned())
+            .collect()
+    }
+
     pub fn active_slots_clone(&self) -> SlotStore {
         self.active_slots().clone()
     }
@@ -401,7 +415,7 @@ mod tests {
 
     fn tmp(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("cq-paster-test-{name}"));
+        p.push(format!("cq-test-{name}"));
         let _ = std::fs::remove_file(&p);
         p
     }
