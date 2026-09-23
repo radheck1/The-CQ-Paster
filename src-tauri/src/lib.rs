@@ -1091,7 +1091,9 @@ pub fn run() {
             dictate::dictate_decide,
             #[cfg(target_os = "macos")]
             dictate::dictate_lists,
+            #[cfg(target_os = "macos")]
             dictate::dictate_set_lists,
+            #[cfg(target_os = "macos")]
             dictate::dictate_mics,
             #[cfg(target_os = "macos")]
             dictate::dictate_set_mic,
@@ -1278,3 +1280,62 @@ mod placing_the_panel {
         assert_eq!((x, y), (AREA.0, AREA.1));
     }
 }
+
+/// Does every macOS-only command in the handler list carry its own gate?
+///
+/// `generate_handler!` takes a `#[cfg]` per entry, and the attribute applies
+/// to the **one** entry after it. Adding a command by inserting a line before
+/// an existing one therefore steals that entry's gate and leaves two commands
+/// ungated — which compiles perfectly on macOS and breaks the Windows build,
+/// where the module does not exist. That is exactly how it broke, and nothing
+/// on a Mac can notice it: `cargo check` here is happy either way.
+///
+/// So the source is read at compile time and checked. It is a crude test, and
+/// it is the only kind that can catch this without a Windows machine.
+#[cfg(test)]
+mod windows_build {
+    /// Modules that only exist on macOS. A command from one of these in the
+    /// handler list must be gated.
+    const MAC_ONLY: &[&str] = &["dictate::", "jotter::", "reminders::", "shake::", "shotter::"];
+    const GATE: &str = "#[cfg(target_os = \"macos\")]";
+
+    #[test]
+    fn every_macos_only_command_is_gated() {
+        let source = include_str!("lib.rs");
+        let lines: Vec<&str> = source.lines().map(str::trim).collect();
+        let mut ungated = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            // A registration line: "dictate::dictate_mics," and nothing else.
+            if !line.ends_with(',') || line.contains(' ') {
+                continue;
+            }
+            if !MAC_ONLY.iter().any(|m| line.starts_with(m)) {
+                continue;
+            }
+            let gated = i > 0 && lines[i - 1] == GATE;
+            if !gated {
+                ungated.push(format!("line {}: {line}", i + 1));
+            }
+        }
+        assert!(
+            ungated.is_empty(),
+            "these commands would not compile on Windows — each needs its own \
+             {GATE} on the line above it:\n  {}",
+            ungated.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn the_check_would_actually_catch_it() {
+        // Guards the guard: if the line-shape match above ever stops matching
+        // a registration line, the test passes vacuously and protects nothing.
+        let source = include_str!("lib.rs");
+        let found = source
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.ends_with(',') && !l.contains(' ') && l.starts_with("dictate::"))
+            .count();
+        assert!(found > 10, "only matched {found} dictate commands — the shape test is wrong");
+    }
+}
+
