@@ -32,6 +32,25 @@ pub fn paste_text(text: &str) {
     macos::paste_text(text);
 }
 
+/// Put text on the pasteboard without pasting it, returning what was there.
+#[cfg(target_os = "macos")]
+pub fn park_text(text: &str) -> Option<crate::clipboard::ClipSnapshot> {
+    macos::park_text(text)
+}
+
+/// Replace what a parked dictation put on the pasteboard, without taking a
+/// new snapshot: the caller is still holding what was borrowed from before.
+#[cfg(target_os = "macos")]
+pub fn repark_text(text: &str) {
+    macos::repark_text(text)
+}
+
+/// Paste what is on the pasteboard, then restore what was borrowed.
+#[cfg(target_os = "macos")]
+pub fn paste_parked(borrowed: Option<crate::clipboard::ClipSnapshot>) {
+    macos::paste_parked(borrowed)
+}
+
 /// Where the pointer is, in points. Exposed so the dictation mark can be put
 /// beside it without a second copy of the CoreGraphics call.
 #[cfg(target_os = "macos")]
@@ -182,7 +201,7 @@ mod windows_impl {
         };
 
         if let Err(err) = rdev::grab(callback) {
-            eprintln!("[cq-paster] keyboard grab failed: {err:?}");
+            eprintln!("[cQ] keyboard grab failed: {err:?}");
         }
     }
 
@@ -229,14 +248,14 @@ mod windows_impl {
                                 show_activity(&app, &state, None);
                             }
                             Ok(_) => {}
-                            Err(e) => eprintln!("[cq-paster] copy snapshot failed: {e}"),
+                            Err(e) => eprintln!("[cQ] copy snapshot failed: {e}"),
                         }
                     }
 
                     // Hand the user's clipboard back.
                     if let Some(prev) = preserved {
                         if let Err(e) = clipboard::restore(&prev) {
-                            eprintln!("[cq-paster] clipboard restore failed: {e}");
+                            eprintln!("[cQ] clipboard restore failed: {e}");
                         }
                     }
                 }
@@ -294,7 +313,7 @@ mod windows_impl {
                         // now and must win.
                         if clipboard::sequence_number() == ours {
                             if let Err(e) = clipboard::restore(&prev) {
-                                eprintln!("[cq-paster] clipboard handback failed: {e}");
+                                eprintln!("[cQ] clipboard handback failed: {e}");
                             }
                         }
                     }

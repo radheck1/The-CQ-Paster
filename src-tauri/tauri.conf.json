@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CQ Paster",
+  "productName": "cQ",
   "version": "0.6.0",
   "identifier": "com.cqpaster.app",
   "build": {
@@ -29,7 +29,7 @@
       },
       {
         "label": "popup",
-        "title": "CQ Paster Popup",
+        "title": "cQ Popup",
         "width": 300,
         "height": 320,
         "resizable": false,

@@ -20,6 +20,7 @@ type ModelStatus = {
 };
 
 type VocabView = { terms: string[]; max: number };
+type Suggestion = { term: string; reason: string; from: string; count: number };
 
 type MicInfo = { id: string; name: string; maker: string | null; is_default: boolean };
 type Mics = { devices: MicInfo[]; chosen: string | null; locked: boolean };
@@ -46,6 +47,11 @@ let mics: Mics = { devices: [], chosen: null, locked: false };
 /** Set when a locked microphone was missing and CQ recorded off another. */
 let substituted: string | null = null;
 let vocab: VocabView = { terms: [], max: 48 };
+let suggestions: Suggestion[] = [];
+/** Shown only when asked for: nobody wants a wall of words by default. */
+let showSuggestions = false;
+/** Automatic list line breaks. On unless switched off. */
+let lists = true;
 
 /** Sizes here are hundreds of megabytes, so one decimal place is plenty. */
 export function size(bytes: number): string {
@@ -162,22 +168,6 @@ function render() {
           })
           .join("")}
       </div>
-      <div class="dc-actions">
-        ${
-          // A way out at every moment. Mid-download the window used to offer
-          // only "Stop", which left no way to dismiss it without abandoning
-          // the download it was reporting on.
-          everything
-            ? `<button class="dc-btn primary" id="dc-close">Done</button>`
-            : busy
-              ? `<button class="dc-btn" id="dc-cancel">Stop</button>
-                 <button class="dc-btn" id="dc-close">Close</button>`
-              : `<button class="dc-btn" id="dc-close">Close</button>
-                 <button class="dc-btn primary" id="dc-go">${
-                   failed || models.some((m) => m.downloaded > 0) ? "Try again" : "Download"
-                 }</button>`
-        }
-      </div>
       ${
         allDone
           ? `<div class="dc-vocab">
@@ -185,6 +175,22 @@ function render() {
                <textarea id="dc-vocab" class="dc-vocab-box" spellcheck="false"
                  placeholder="Snowflake&#10;Pendo&#10;customer_id">${vocabText(vocab.terms)}</textarea>
                <p class="dc-vocab-note${vocab.terms.length > vocab.max ? " over" : ""}">${vocabNote(vocab.terms.length, vocab.max)}</p>
+               ${
+                 showSuggestions
+                   ? suggestions.length
+                     ? `<ul class="dc-sugg">${suggestions
+                         .map(
+                           (x) => `<li>
+                             <button class="dc-sugg-add" data-term="${x.term}" title="Add to the list">+</button>
+                             <code>${x.term}</code>
+                             <span class="dc-sugg-why">${x.reason} · ${x.from}${x.count > 1 ? ` · seen ${x.count}×` : ""}</span>
+                             <button class="dc-sugg-no" data-term="${x.term}" title="Never suggest this">×</button>
+                           </li>`,
+                         )
+                         .join("")}</ul>`
+                     : `<p class="dc-vocab-note">Nothing new found in what you've copied or written.</p>`
+                   : `<button class="dc-link" id="dc-find">Find words in what I've copied and written…</button>`
+               }
              </div>
              <div class="dc-mic">
                <label class="dc-mic-row">
@@ -208,6 +214,13 @@ function render() {
                    ? `<p class="dc-sub">Recorded with a different microphone — ${substituted} was not connected.</p>`
                    : ""
                }
+               <label class="dc-mic-lock">
+                 <input type="checkbox" id="dc-lists" ${lists ? "checked" : ""} />
+                 <span>Put spoken lists on separate lines</span>
+               </label>
+               <p class="dc-sub">When you say "two things" or count items off,
+                 each one goes on its own line. Only the line breaks change —
+                 never a word.</p>
              </div>
              <div class="dc-try">
                <button class="dc-btn" id="dc-try" ${trying === "idle" ? "" : "disabled"}>
@@ -230,6 +243,22 @@ function render() {
              }`
           : ""
       }
+      <div class="dc-actions">
+        ${
+          // A way out at every moment. Mid-download the window used to offer
+          // only "Stop", which left no way to dismiss it without abandoning
+          // the download it was reporting on.
+          everything
+            ? `<button class="dc-btn primary" id="dc-close">Done</button>`
+            : busy
+              ? `<button class="dc-btn" id="dc-cancel">Stop</button>
+                 <button class="dc-btn" id="dc-close">Close</button>`
+              : `<button class="dc-btn" id="dc-close">Close</button>
+                 <button class="dc-btn primary" id="dc-go">${
+                   failed || models.some((m) => m.downloaded > 0) ? "Try again" : "Download"
+                 }</button>`
+        }
+      </div>
       <p class="dc-foot">
         ${
           everything
@@ -259,6 +288,26 @@ function render() {
     vocab = await invoke<VocabView>("dictate_set_vocab", { terms: wanted });
     render();
   });
+  root.querySelector<HTMLButtonElement>("#dc-find")?.addEventListener("click", async () => {
+    showSuggestions = true;
+    suggestions = await invoke<Suggestion[]>("dictate_suggestions");
+    render();
+  });
+  // Ticking one adds it; the cross turns it down for good, so the same word
+  // is not offered every time.
+  for (const [sel, keep] of [
+    [".dc-sugg-add", true],
+    [".dc-sugg-no", false],
+  ] as const) {
+    root.querySelectorAll<HTMLButtonElement>(sel).forEach((b) =>
+      b.addEventListener("click", async () => {
+        const term = b.dataset.term!;
+        vocab = await invoke<VocabView>("dictate_decide", { term, keep });
+        suggestions = suggestions.filter((x) => x.term !== term);
+        render();
+      }),
+    );
+  }
   root.querySelector<HTMLSelectElement>("#dc-mic")?.addEventListener("change", async (e) => {
     const id = (e.target as HTMLSelectElement).value || null;
     // Following the system default and locking are contradictory, so choosing
@@ -275,6 +324,12 @@ function render() {
       locked: (e.target as HTMLInputElement).checked,
     });
     mics = await invoke<Mics>("dictate_mics");
+    render();
+  });
+  root.querySelector<HTMLInputElement>("#dc-lists")?.addEventListener("change", async (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    await invoke("dictate_set_lists", { on });
+    lists = await invoke<boolean>("dictate_lists");
     render();
   });
   root.querySelector<HTMLButtonElement>("#dc-try")?.addEventListener("click", () => {
@@ -300,6 +355,7 @@ async function refresh() {
   try {
     mics = await invoke<Mics>("dictate_mics");
     vocab = await invoke<VocabView>("dictate_vocab");
+    lists = await invoke<boolean>("dictate_lists");
   } catch {
     mics = { devices: [], chosen: null, locked: false };
   }

@@ -517,7 +517,10 @@ fn log_press(app: &AppHandle, pressed: &'static str, later: &'static str) {
     });
 }
 
-fn play(app: &AppHandle, name: String) {
+/// Play a macOS system sound by name, off the calling thread.
+///
+/// Shared with dictation, which marks its start and finish the same way.
+pub(crate) fn play(app: &AppHandle, name: String) {
     let _ = app.run_on_main_thread(move || {
         if let Some(sound) = NSSound::soundNamed(&NSString::from_str(&name)) {
             // Start over if it's still ringing from the last time.

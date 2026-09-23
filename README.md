@@ -1,4 +1,4 @@
-# CQ Paster
+# cQ
 
 [![CI](https://github.com/radheck1/The-CQ-Paster/actions/workflows/ci.yml/badge.svg)](https://github.com/radheck1/The-CQ-Paster/actions/workflows/ci.yml)
 
@@ -21,7 +21,7 @@ independent set of 9.
 >
 > **macOS:** the build is not notarized, so Gatekeeper blocks a normal
 > double-click. **Right-click the app → Open → Open**, or run
-> `xattr -dr com.apple.quarantine "/Applications/CQ Paster.app"`. You must also
+> `xattr -dr com.apple.quarantine "/Applications/cQ.app"`. You must also
 > grant **Accessibility** and **Input Monitoring** — the app walks you through
 > both on first launch. See [macOS](#macos) below.
 
@@ -56,7 +56,7 @@ normal clipboard, so a plain `Ctrl+V` still pastes whatever you had before.
 
 ### The one tradeoff
 
-While CQ Paster is running, `Ctrl+1`…`Ctrl+9` become its trigger prefix, so those
+While cQ is running, `Ctrl+1`…`Ctrl+9` become its trigger prefix, so those
 specific combos no longer reach the foreground app (e.g. browser tab-switching).
 Plain number typing is unaffected. The same applies to `⌘1`–`⌘9` on macOS, and
 to `⌘←` / `⌘→` between pressing a digit and pressing `C` or `V`.
@@ -234,7 +234,7 @@ the arrow-key folder switch and shake to open — is macOS only.
 
 ### Installing
 
-1. Open the `.dmg` and drag **CQ Paster** to Applications. Install it *before*
+1. Open the `.dmg` and drag **cQ** to Applications. Install it *before*
    first launch — the first run registers start-on-login against wherever the
    app currently is.
 2. Right-click the app → **Open** → **Open**. A normal double-click is blocked,
@@ -243,7 +243,7 @@ the arrow-key folder switch and shake to open — is macOS only.
    opens the right System Settings pane for each and picks them up without a
    restart.
 
-> **Upgrading and the permission list:** if CQ Paster is already listed but the
+> **Upgrading and the permission list:** if cQ is already listed but the
 > hotkeys don't work, switch its entry **off and on again**. macOS binds these
 > grants to the app's signing identity, and a stale entry can look enabled while
 > granting nothing.

@@ -70,7 +70,7 @@ const JOTPAD_ICON = svg(`<rect x="5" y="4" width="14" height="18" rx="2"/><path 
 /** The footer's reminder that closing the control panel doesn't quit. */
 const BACKGROUND_TIP = IS_MAC
   ? "You can close this window.<br />cQ runs in the background."
-  : "You can close this window,<br />CQ Paster runs in the background";
+  : "You can close this window,<br />cQ runs in the background";
 const CHECK_ICON = svg(`<polyline points="20 6 9 17 4 12"/>`, 12);
 const PENCIL_ICON = svg(
   `<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/>`,
