@@ -14,6 +14,8 @@ mod dictate;
 #[cfg(target_os = "macos")]
 mod jotter;
 #[cfg(target_os = "macos")]
+mod recent;
+#[cfg(target_os = "macos")]
 mod reminders;
 #[cfg(target_os = "macos")]
 mod shake;
@@ -44,6 +46,20 @@ fn data_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("com.cqpaster.app")
+}
+
+/// The control panel saying which tool is in use, so shake can reopen on it.
+///
+/// Sent on a view switch rather than inferred from anything: the panel is the
+/// only place that knows a view changed, and the alternative — deciding from
+/// the remembered view in `jotter.json` — cannot tell being *shown* a tool
+/// from being *switched* to it.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn tool_used(tool: String) {
+    if let Some(t) = recent::Tool::from_str(&tool) {
+        recent::used(t);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1090,6 +1106,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             dictate::dictate_decide,
             #[cfg(target_os = "macos")]
+            tool_used,
+            #[cfg(target_os = "macos")]
             dictate::dictate_lists,
             #[cfg(target_os = "macos")]
             dictate::dictate_set_lists,
@@ -1296,7 +1314,19 @@ mod placing_the_panel {
 mod windows_build {
     /// Modules that only exist on macOS. A command from one of these in the
     /// handler list must be gated.
-    const MAC_ONLY: &[&str] = &["dictate::", "jotter::", "reminders::", "shake::", "shotter::"];
+    /// Commands that only exist on macOS, by how they appear in the handler
+    /// list. Most carry their module's name, which makes them easy to spot. A
+    /// command defined in this file has no prefix, so it has to be named here
+    /// by hand — `tool_used` was gated correctly and still slipped past this
+    /// check until it was added.
+    const MAC_ONLY: &[&str] = &[
+        "dictate::",
+        "jotter::",
+        "reminders::",
+        "shake::",
+        "shotter::",
+        "tool_used,",
+    ];
     const GATE: &str = "#[cfg(target_os = \"macos\")]";
 
     #[test]

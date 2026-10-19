@@ -776,6 +776,9 @@ fn worker(
             }
             Action::Copy(slot) => {
                 trace(&format!("COPY -> slot {slot}"));
+                // What shake should reopen on. The worker, not the tap
+                // callback: one lock, and nothing that can block it.
+                crate::recent::used(crate::recent::Tool::Paster);
 
                 // A slot copy is a stash: it must fill slot N without disturbing
                 // what a plain Cmd+V pastes. The chord passes C through, so the
@@ -818,6 +821,7 @@ fn worker(
             }
             Action::Paste(slot, plain) => {
                 trace(&format!("PASTE <- slot {slot} (plain={plain})"));
+                crate::recent::used(crate::recent::Tool::Paster);
                 let slot_snap = state.folders.lock().unwrap().get_snapshot(slot);
                 let Some(slot_snap) = slot_snap else {
                     trace("  SKIPPED: slot is empty");

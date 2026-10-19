@@ -782,6 +782,47 @@ through `:focus-within`, which shares the rule.
 
 ### 7.7 Shake to open
 
+**Shake opens on the tool that did something most recently** — `recent.rs`,
+which is one `Mutex<Option<Tool>>` and nothing else.
+
+**It has no clock on purpose.** A timestamp per tool with an hour's staleness
+was offered and turned down in favour of "the most recent thing wins, however
+old". That removed the clock, the constant, and every boundary question; the
+last write wins and that is the whole rule.
+
+**And no file.** Held in memory, so a restart of CQ forgets it — which is what
+gives the fallback something to do. With nothing recorded, shake opens whichever
+tool the panel was last showing, which the frontend already persists in
+`jotter.json` and which is what shake did before this existed. The feature can
+only add: it changes what happens after a tool has been used and leaves a fresh
+start alone.
+
+Three writers, each where the thing actually happens:
+
+| Tool | Written at | Why there |
+|---|---|---|
+| Paster | `Action::Copy` and `Action::Paste` in the hook's **worker** | one lock, and never the tap callback (§5.1) |
+| Shotter | inside `scan`, where a file is added | the `shots-changed` event also fires for a trash and an undo, and neither is "a screenshot was just taken" |
+| Jotter | the `tool_used` command, from `switchView` | see below |
+
+**Jotter has to report in**, which is not obvious since it has no hotkey and the
+remembered view would seem to cover it. It does not: copy a slot, then open
+Jotter by hand, and the copy would be the only thing recorded — so shake would
+open Paster over the top of the tool just chosen. Rust cannot infer this
+either, because the remembered view cannot distinguish being *shown* a tool
+from being *switched* to it. Switching the view is using a tool.
+
+The event is emitted **before** `show_main_at_pointer`, so the view switches
+while the window is still hidden rather than the old one flashing up first.
+
+**`tool_used` found a hole in the Windows guard test.** That test reads `lib.rs`
+through `include_str!` and checks every macOS-only command in the handler list
+carries its own `#[cfg]`. It matched on the module prefix — `dictate::`,
+`jotter::` — and `tool_used` is defined in `lib.rs` itself, so it has no prefix
+and slipped straight past. The gate was right by luck. A command defined in that
+file has to be named in `MAC_ONLY` by hand, and the test says so now; verified
+by removing the gate and watching it report line 1108.
+
 Shaking the mouse opens the control panel. **macOS only.**
 
 **The thresholds come from a recording, not a guess.** A standalone recorder
@@ -933,6 +974,86 @@ on a thread of its own with the result delivered as an event.
 does, and only if nothing else claimed it meanwhile. It raises the tap's
 `injecting` guard, which now has a handle outside the worker because
 transcription cannot be done on the worker thread.
+
+**A Chromium application has no accessibility tree until something asks for
+one, and that is why dictation would not paste into Claude Desktop.** Electron
+apps — Claude Desktop, Slack, VS Code — build their tree lazily. Until then the
+focus query fails with `kAXErrorCannotComplete`, which is indistinguishable from
+"nothing is focused" unless you know to look. `AXManualAccessibility` is the
+attribute Chromium watches for; setting it is what a screen reader does.
+
+So `focus::look` has three routes, in increasing order of intrusiveness:
+
+1. `AXUIElementCreateSystemWide`, the documented way, with a bounded 0.5 s
+   messaging timeout since a paste is waiting on it;
+2. `AXUIElementCreateApplication` on the frontmost pid — the same question
+   without the proxy, since the system-wide element's focused element *is* the
+   frontmost application's;
+3. set `AXManualAccessibility` on that application and ask once more.
+
+Route 3 is **not free for the other application**: its accessibility engine
+stays on for the life of the process, costing it memory and CPU. So it is asked
+for once per process, and it is logged when it happens. `Look::describe` records
+which route answered.
+
+**The wake happens on key-down, not on paste**, and that detail is the
+difference between working and not. Measured: a tree asked for after the last
+word was still not ready 320 ms later, so that dictation parked and waited for a
+click — while the two after it pasted directly, by which point the tree existed
+and even the system-wide route answered. Chromium builds it asynchronously and
+on its own schedule, so there is no sleep worth guessing at. `begin` therefore
+calls `focus::wake_frontmost` when the trigger goes **down**, giving it the
+length of a spoken sentence, exactly as `rewrite::prewarm` does with the model.
+`look` keeps route 3 as a fallback for the case where the application in front
+changed mid-dictation.
+
+**A 120 ms retry was tried and deleted.** It ran three times and converted
+nothing, which is what the explanation predicts: waiting does not cause a tree
+to be built, so no amount of patience could have helped. It was written while
+the cause was still believed to be a race. The code comment that shipped with it
+said to delete it if the log never showed it turning a failure into a paste; the
+log showed 3 and 0.
+
+### The measuring mistake, which cost three builds
+
+Worth reading before debugging anything about focus, because the same trap is
+waiting.
+
+The role data gave a clean-looking signal: 49 failures out of 531 dictations,
+all `Unknown`, and in 45 of them the same field answered `AXTextArea` moments
+later once a click arrived. That reads as a race, and the dictation mark is
+hidden on the line above the query — so either hiding a window shifts the focus,
+or CQ's own mark held it and hiding releases it. Two theories, opposite fixes. A
+120 ms retry shipped instead of either, and changed nothing.
+
+Logging the role **and the owning application** then ruled out both at once:
+`role none` with no application name meant there was no focused element at all,
+and CQ's mark holding focus would have named CQ.
+
+Then the real mistake. A standalone Swift probe compared the system-wide element
+against the application's own element and returned **0/10 against 10/10** — a
+number so clean it went straight into a fix. It was wrong. **The probe runs as a
+child of the application being measured**, so it was asking the system-wide
+element about its own app, which is an accessibility reentrancy problem CQ is
+not subject to. It measured something no CQ code path ever does.
+
+What exposed it was the shipped fix working *by the wrong route*: the log said
+`via the system-wide element`, the very route the probe scored 0/10. The actual
+reason that paste succeeded was that the probe had set `AXManualAccessibility`
+on Claude Desktop minutes earlier while diagnosing — the process was still
+alive, so the engine was still on. **The probe fixed the bug and the code took
+the credit.**
+
+Three rules fall out of it:
+
+- A probe outside the app is not a stand-in for the app. CQ holds the
+  accessibility permission; a child of the application under test is in a
+  different position entirely. Prefer an `#[ignore]`d test inside the real code
+  — `asking_the_system_does_not_crash` prints the route it took.
+- A diagnostic that changes the thing it measures invalidates every test after
+  it. Setting an attribute to see what happens is not a read.
+- When a fix works, check *which path* carried it. Success by an unexpected
+  route is evidence against the explanation, not for it.
 
 **A spoken list goes onto separate lines**, when it is counted off — "three
 things I need. First, milk. Second, eggs. Third, bread." Each item starts a

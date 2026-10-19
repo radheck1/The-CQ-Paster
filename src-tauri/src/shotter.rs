@@ -214,6 +214,12 @@ fn scan(st: &mut State, folder: &Path, now: Instant) -> bool {
     // Oldest first, so the newest ends up at the front.
     found.sort_by_key(|p| created_ms(p));
     let added = !found.is_empty();
+    // A new screenshot is what shake should reopen on. Here rather than beside
+    // the `shots-changed` event, because that fires for a trash and an undo
+    // too, and neither of those is "a screenshot was just taken".
+    if added && !cfg!(test) {
+        crate::recent::used(crate::recent::Tool::Shotter);
+    }
     for path in found {
         st.saved.next_id += 1;
         let entry = Entry { id: st.saved.next_id, taken: created_ms(&path), path };

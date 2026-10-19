@@ -572,6 +572,10 @@ pub fn begin(app: &AppHandle, at: (f64, f64)) {
     // together they are most of the cost: 649 ms for the first rewrite after
     // launch against 244-355 ms once warm.
     rewrite::prewarm();
+    // The application in front may have no accessibility tree yet, and
+    // building one takes longer than the gap between the last word and the
+    // paste. Asked now, it has the length of a sentence to get ready.
+    focus::wake_frontmost();
     indicator::show(app, at);
     crate::reminders::play(app, SOUND_START.into());
     // A new dictation supersedes one still looking for somewhere to land: the
@@ -688,9 +692,14 @@ pub fn end(app: &AppHandle, held: std::time::Duration, as_heard: bool) {
                                 crate::reminders::play(&app, SOUND_END.into());
                                 crate::hook::paste_text(&out);
                             }
-                            other => {
+                            // The instrumentation that solved this: the role,
+                            // the owning application, and which route
+                            // answered. A bare "Unknown" said nothing for 49
+                            // failures running.
+                            _ => {
                                 crate::diag(&format!(
-                                    "dictate: nowhere to paste ({other:?}) — waiting for a click"
+                                    "dictate: nowhere to paste — {} — waiting for a click",
+                                    look.describe()
                                 ));
                                 let borrowed = crate::hook::park_text(&out);
                                 pending::begin(out.clone(), borrowed);
@@ -723,11 +732,7 @@ pub fn end(app: &AppHandle, held: std::time::Duration, as_heard: bool) {
 /// Both paste paths come through here so they cannot drift apart — a dictation
 /// that waited for a click should land exactly as one that did not.
 fn text_for(look: &focus::Look, out: String) -> String {
-    crate::diag(&format!(
-        "dictate: pasting into {} ({:?})",
-        look.role.as_deref().unwrap_or("an app that gave no role"),
-        look.target
-    ));
+    crate::diag(&format!("dictate: pasting into {}", look.describe()));
     let out = match listing::format(&out) {
         Some(listed) => listed,
         None => out,
