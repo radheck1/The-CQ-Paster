@@ -934,6 +934,86 @@ does, and only if nothing else claimed it meanwhile. It raises the tap's
 `injecting` guard, which now has a handle outside the worker because
 transcription cannot be done on the worker thread.
 
+**A Chromium application has no accessibility tree until something asks for
+one, and that is why dictation would not paste into Claude Desktop.** Electron
+apps — Claude Desktop, Slack, VS Code — build their tree lazily. Until then the
+focus query fails with `kAXErrorCannotComplete`, which is indistinguishable from
+"nothing is focused" unless you know to look. `AXManualAccessibility` is the
+attribute Chromium watches for; setting it is what a screen reader does.
+
+So `focus::look` has three routes, in increasing order of intrusiveness:
+
+1. `AXUIElementCreateSystemWide`, the documented way, with a bounded 0.5 s
+   messaging timeout since a paste is waiting on it;
+2. `AXUIElementCreateApplication` on the frontmost pid — the same question
+   without the proxy, since the system-wide element's focused element *is* the
+   frontmost application's;
+3. set `AXManualAccessibility` on that application and ask once more.
+
+Route 3 is **not free for the other application**: its accessibility engine
+stays on for the life of the process, costing it memory and CPU. So it is asked
+for once per process, and it is logged when it happens. `Look::describe` records
+which route answered.
+
+**The wake happens on key-down, not on paste**, and that detail is the
+difference between working and not. Measured: a tree asked for after the last
+word was still not ready 320 ms later, so that dictation parked and waited for a
+click — while the two after it pasted directly, by which point the tree existed
+and even the system-wide route answered. Chromium builds it asynchronously and
+on its own schedule, so there is no sleep worth guessing at. `begin` therefore
+calls `focus::wake_frontmost` when the trigger goes **down**, giving it the
+length of a spoken sentence, exactly as `rewrite::prewarm` does with the model.
+`look` keeps route 3 as a fallback for the case where the application in front
+changed mid-dictation.
+
+**A 120 ms retry was tried and deleted.** It ran three times and converted
+nothing, which is what the explanation predicts: waiting does not cause a tree
+to be built, so no amount of patience could have helped. It was written while
+the cause was still believed to be a race. The code comment that shipped with it
+said to delete it if the log never showed it turning a failure into a paste; the
+log showed 3 and 0.
+
+### The measuring mistake, which cost three builds
+
+Worth reading before debugging anything about focus, because the same trap is
+waiting.
+
+The role data gave a clean-looking signal: 49 failures out of 531 dictations,
+all `Unknown`, and in 45 of them the same field answered `AXTextArea` moments
+later once a click arrived. That reads as a race, and the dictation mark is
+hidden on the line above the query — so either hiding a window shifts the focus,
+or CQ's own mark held it and hiding releases it. Two theories, opposite fixes. A
+120 ms retry shipped instead of either, and changed nothing.
+
+Logging the role **and the owning application** then ruled out both at once:
+`role none` with no application name meant there was no focused element at all,
+and CQ's mark holding focus would have named CQ.
+
+Then the real mistake. A standalone Swift probe compared the system-wide element
+against the application's own element and returned **0/10 against 10/10** — a
+number so clean it went straight into a fix. It was wrong. **The probe runs as a
+child of the application being measured**, so it was asking the system-wide
+element about its own app, which is an accessibility reentrancy problem CQ is
+not subject to. It measured something no CQ code path ever does.
+
+What exposed it was the shipped fix working *by the wrong route*: the log said
+`via the system-wide element`, the very route the probe scored 0/10. The actual
+reason that paste succeeded was that the probe had set `AXManualAccessibility`
+on Claude Desktop minutes earlier while diagnosing — the process was still
+alive, so the engine was still on. **The probe fixed the bug and the code took
+the credit.**
+
+Three rules fall out of it:
+
+- A probe outside the app is not a stand-in for the app. CQ holds the
+  accessibility permission; a child of the application under test is in a
+  different position entirely. Prefer an `#[ignore]`d test inside the real code
+  — `asking_the_system_does_not_crash` prints the route it took.
+- A diagnostic that changes the thing it measures invalidates every test after
+  it. Setting an attribute to see what happens is not a read.
+- When a fix works, check *which path* carried it. Success by an unexpected
+  route is evidence against the explanation, not for it.
+
 **A spoken list goes onto separate lines**, when it is counted off — "three
 things I need. First, milk. Second, eggs. Third, bread." Each item starts a
 line; the lead-in sentence keeps its own. `dictate/listing.rs`, and there is a

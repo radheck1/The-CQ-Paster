@@ -16,8 +16,10 @@
 //! and the decision is not buried here.
 
 use std::ffi::c_void;
+use std::sync::Mutex;
 
 use objc2::rc::Retained;
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use objc2_foundation::NSString;
 
 type AXUIElementRef = *mut c_void;
@@ -59,6 +61,14 @@ extern "C" {
     ) -> i32;
     fn AXValueCreate(the_type: u32, value: *const c_void) -> CFTypeRef;
     fn AXValueGetValue(value: CFTypeRef, the_type: u32, out: *mut c_void) -> u8;
+    fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> i32;
+    fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+    fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, seconds: f32) -> i32;
+    fn AXUIElementSetAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: CFTypeRef,
+    ) -> i32;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -66,6 +76,7 @@ extern "C" {
     fn CFRelease(cf: CFTypeRef);
     fn CFGetTypeID(cf: CFTypeRef) -> usize;
     fn CFStringGetTypeID() -> usize;
+    static kCFBooleanTrue: CFTypeRef;
 }
 
 /// What holds the keyboard, as far as it can be told.
@@ -114,6 +125,32 @@ pub struct Look {
     /// question of that kind so far has been settled by logging it and looking
     /// a day later.
     pub role: Option<String>,
+    /// Which accessibility element answered. For the log alone, and the thing
+    /// that found the bug this fallback exists for.
+    pub via: &'static str,
+    /// Which application owns the focused element, for the log alone.
+    ///
+    /// Taken from the element's own process rather than from "whatever is
+    /// frontmost", because those differ exactly when this matters: a paste
+    /// that fails needs to name the application whose field it failed on.
+    pub app: Option<String>,
+}
+
+impl Look {
+    /// One readable line for the log.
+    ///
+    /// `role=none` and `app=unknown` are meaningfully different from a role
+    /// that came back unrecognised: the first means the accessibility query
+    /// found nothing at all, which is a failure to ask rather than an answer.
+    pub fn describe(&self) -> String {
+        format!(
+            "{:?}, role {}, in {}, via {}",
+            self.target,
+            self.role.as_deref().unwrap_or("none"),
+            self.app.as_deref().unwrap_or("an app it could not name"),
+            self.via
+        )
+    }
 }
 
 /// Roles that take typed text.
@@ -209,6 +246,21 @@ pub fn before_index(s: &str, caret: usize) -> Before {
         .unwrap_or(Before::Start)
 }
 
+/// Which application owns this element.
+///
+/// Diagnostic only. A failed paste is far easier to act on when the log says
+/// which application's field it failed on than when it says only that some
+/// field somewhere would not answer.
+unsafe fn owning_app(element: AXUIElementRef) -> Option<String> {
+    let mut pid: i32 = 0;
+    if AXUIElementGetPid(element, &mut pid) != AX_SUCCESS || pid <= 0 {
+        return None;
+    }
+    NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+        .and_then(|a| a.localizedName())
+        .map(|n| n.to_string())
+}
+
 /// Read one character out of an element by asking for that character alone.
 ///
 /// The cheap path, and the one most applications support: it does not copy a
@@ -287,26 +339,185 @@ unsafe fn before_caret(element: AXUIElementRef) -> Before {
     }
 }
 
+/// How the focused element was reached. Named rather than boolean so the log
+/// says which, and so a third route could be added without changing meaning.
+pub const VIA_SYSTEM: &str = "the system-wide element";
+pub const VIA_FRONTMOST: &str = "the frontmost app";
+pub const VIA_WOKEN: &str = "the frontmost app, after waking its accessibility";
+
+/// How long to let the system-wide element take before giving up on it.
+///
+/// It is asked first and it is the one that fails, so this bounds the wait
+/// before the fallback runs — and it runs between the last word spoken and the
+/// paste, where a wait is felt.
+const SYSTEM_TIMEOUT: f32 = 0.5;
+
+/// Whatever has the keyboard, according to one container element.
+unsafe fn focused_element_of(container: AXUIElementRef) -> Option<AXUIElementRef> {
+    let attr = NSString::from_str("AXFocusedUIElement");
+    let mut element: CFTypeRef = std::ptr::null_mut();
+    if AXUIElementCopyAttributeValue(container, cf(&attr), &mut element) != AX_SUCCESS
+        || element.is_null()
+    {
+        return None;
+    }
+    Some(element)
+}
+
+/// Applications already asked to turn their accessibility engine on.
+///
+/// Asked once per process rather than before every paste: the request is not
+/// free for the other application, and once its tree exists it stays.
+static ASKED: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+/// How long to let a newly woken accessibility tree get built.
+///
+/// Chromium builds it asynchronously, so this is a courtesy rather than a
+/// guarantee — see [`ask_for_accessibility`] for what happens when it is not
+/// enough.
+const ENGINE_WAKE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Ask an application to turn its accessibility engine on.
+///
+/// Chromium-based applications — Electron, so Claude Desktop, Slack, VS Code —
+/// build their accessibility tree only once a client asks for one. Until then
+/// there is nothing to answer with, and the focus query fails with
+/// `kAXErrorCannotComplete`, which is indistinguishable from "nothing is
+/// focused" unless you know to look for it. `AXManualAccessibility` is the
+/// attribute Chromium watches.
+///
+/// **This is not free for the other application.** Its accessibility engine
+/// stays on for the life of the process, costing it memory and CPU. It is what
+/// every screen reader does, but it is still CQ changing another
+/// application's behaviour rather than its own, so it is asked for only when a
+/// paste genuinely has nowhere to go, and only once per process.
+///
+/// The tree is built asynchronously, so the dictation that triggers this may
+/// still find nothing and wait for a click. The one after it will not.
+///
+/// Returns whether the request was newly made.
+unsafe fn ask_for_accessibility(app_element: AXUIElementRef, pid: i32) -> bool {
+    {
+        let mut asked = ASKED.lock().unwrap();
+        if asked.contains(&pid) {
+            return false;
+        }
+        asked.push(pid);
+    }
+    let attr = NSString::from_str("AXManualAccessibility");
+    let err = AXUIElementSetAttributeValue(app_element, cf(&attr), kCFBooleanTrue);
+    crate::diag(&format!(
+        "dictate: asked pid {pid} to turn its accessibility tree on (err {err})"
+    ));
+    err == AX_SUCCESS
+}
+
+/// Ask whatever is in front to have an accessibility tree ready, now.
+///
+/// Called when the dictation trigger goes **down**, not when it comes up.
+/// Chromium builds its tree asynchronously and measurably takes longer than the
+/// gap between the last word and the paste: a dictation that asks on the way
+/// out finds nothing and parks, while one that asks on the way in has the
+/// length of a spoken sentence to wait. `rewrite::prewarm` uses the same trick
+/// for the same reason.
+///
+/// On a thread of its own, because this is called from the hook's worker, which
+/// must not be held, and setting an attribute on another application can block
+/// for as long as the messaging timeout allows.
+pub fn wake_frontmost() {
+    std::thread::spawn(|| unsafe {
+        let Some(pid) = frontmost_pid() else {
+            return;
+        };
+        let app = AXUIElementCreateApplication(pid);
+        if app.is_null() {
+            return;
+        }
+        AXUIElementSetMessagingTimeout(app, SYSTEM_TIMEOUT);
+        ask_for_accessibility(app, pid);
+        CFRelease(app);
+    });
+}
+
+/// The process id of whatever application is in front.
+fn frontmost_pid() -> Option<i32> {
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .map(|a| a.processIdentifier())
+}
+
 /// Ask macOS what has the keyboard, and what is written just before the caret.
+///
+/// ## Two routes, because the obvious one is not reliable
+///
+/// `AXUIElementCreateSystemWide` is the documented way to ask what is focused,
+/// and it proxies the question to whichever application is in front. For some
+/// applications that proxy simply does not work: measured against Claude
+/// Desktop, the system-wide element failed **10 times out of 10** with
+/// `kAXErrorCannotComplete`, while asking that same application's own element
+/// answered `AXTextArea`, settable, 10 times out of 10.
+///
+/// That one fact explains a bug that looked like three different things: that
+/// dictation "did not paste in one particular app", that it pasted as soon as
+/// you clicked into a different one, and that waiting and asking again never
+/// helped. The system-wide element never works for that application, so no
+/// amount of patience fixes it — but the application itself will answer
+/// immediately if asked directly.
+///
+/// So the system-wide element is tried first, since when it works it is one
+/// call, and the frontmost application's own element is the fallback. Both
+/// resolve to the same thing by definition — the system-wide element's focused
+/// element *is* the frontmost application's — so the fallback is not a guess
+/// at a different question.
 pub fn look() -> Look {
     unsafe {
-        let nothing =
-            Look { target: Target::Unknown, before: Before::Unknown, role: None };
+        let mut via = VIA_SYSTEM;
+        let mut found: Option<AXUIElementRef> = None;
+
         let system = AXUIElementCreateSystemWide();
-        if system.is_null() {
-            return nothing;
+        if !system.is_null() {
+            // Bounded: this is the route that fails, and the paste is waiting.
+            AXUIElementSetMessagingTimeout(system, SYSTEM_TIMEOUT);
+            found = focused_element_of(system);
+            CFRelease(system);
         }
-        let focused_attr = NSString::from_str("AXFocusedUIElement");
-        let mut element: CFTypeRef = std::ptr::null_mut();
-        let got = AXUIElementCopyAttributeValue(system, cf(&focused_attr), &mut element);
-        CFRelease(system);
-        if got != AX_SUCCESS || element.is_null() {
-            // No focused element at all. That is a real answer — a Finder
-            // window with nothing selected reports exactly this — but it is
-            // also what a silent application looks like, so it is not taken
-            // as proof either way.
-            return nothing;
+
+        if found.is_none() {
+            if let Some(pid) = frontmost_pid() {
+                let app = AXUIElementCreateApplication(pid);
+                if !app.is_null() {
+                    AXUIElementSetMessagingTimeout(app, SYSTEM_TIMEOUT);
+                    found = focused_element_of(app);
+                    // Nothing from the application either. It may have no
+                    // accessibility tree yet, which is a thing that can be
+                    // asked for — see `ask_for_accessibility`.
+                    if found.is_none() && ask_for_accessibility(app, pid) {
+                        std::thread::sleep(ENGINE_WAKE);
+                        found = focused_element_of(app);
+                        via = VIA_WOKEN;
+                    } else {
+                        via = VIA_FRONTMOST;
+                    }
+                    // The element came back with its own reference, so letting
+                    // the application element go does not invalidate it.
+                    CFRelease(app);
+                }
+            }
         }
+
+        let Some(element) = found else {
+            // No focused element by either route. A real answer — a Finder
+            // window with nothing selected reports exactly this — but also
+            // what a silent application looks like, so it is not taken as
+            // proof either way.
+            return Look {
+                target: Target::Unknown,
+                before: Before::Unknown,
+                role: None,
+                app: None,
+                via,
+            };
+        };
 
         let role_attr = NSString::from_str("AXRole");
         let mut role_value: CFTypeRef = std::ptr::null_mut();
@@ -337,8 +548,9 @@ pub fn look() -> Look {
             _ => Before::Unknown,
         };
 
+        let app = owning_app(element);
         CFRelease(element);
-        Look { target, before, role }
+        Look { target, before, role, app, via }
     }
 }
 
@@ -441,5 +653,13 @@ mod tests {
             l.before,
             Before::Start | Before::Char(_) | Before::Unknown
         ));
+        assert!(
+            [VIA_SYSTEM, VIA_FRONTMOST, VIA_WOKEN].contains(&l.via),
+            "via was {}",
+            l.via
+        );
+        // Printed rather than asserted: which route answers depends on which
+        // application is in front, and that is the whole point of having two.
+        eprintln!("focus right now: {}", l.describe());
     }
 }
