@@ -782,6 +782,47 @@ through `:focus-within`, which shares the rule.
 
 ### 7.7 Shake to open
 
+**Shake opens on the tool that did something most recently** — `recent.rs`,
+which is one `Mutex<Option<Tool>>` and nothing else.
+
+**It has no clock on purpose.** A timestamp per tool with an hour's staleness
+was offered and turned down in favour of "the most recent thing wins, however
+old". That removed the clock, the constant, and every boundary question; the
+last write wins and that is the whole rule.
+
+**And no file.** Held in memory, so a restart of CQ forgets it — which is what
+gives the fallback something to do. With nothing recorded, shake opens whichever
+tool the panel was last showing, which the frontend already persists in
+`jotter.json` and which is what shake did before this existed. The feature can
+only add: it changes what happens after a tool has been used and leaves a fresh
+start alone.
+
+Three writers, each where the thing actually happens:
+
+| Tool | Written at | Why there |
+|---|---|---|
+| Paster | `Action::Copy` and `Action::Paste` in the hook's **worker** | one lock, and never the tap callback (§5.1) |
+| Shotter | inside `scan`, where a file is added | the `shots-changed` event also fires for a trash and an undo, and neither is "a screenshot was just taken" |
+| Jotter | the `tool_used` command, from `switchView` | see below |
+
+**Jotter has to report in**, which is not obvious since it has no hotkey and the
+remembered view would seem to cover it. It does not: copy a slot, then open
+Jotter by hand, and the copy would be the only thing recorded — so shake would
+open Paster over the top of the tool just chosen. Rust cannot infer this
+either, because the remembered view cannot distinguish being *shown* a tool
+from being *switched* to it. Switching the view is using a tool.
+
+The event is emitted **before** `show_main_at_pointer`, so the view switches
+while the window is still hidden rather than the old one flashing up first.
+
+**`tool_used` found a hole in the Windows guard test.** That test reads `lib.rs`
+through `include_str!` and checks every macOS-only command in the handler list
+carries its own `#[cfg]`. It matched on the module prefix — `dictate::`,
+`jotter::` — and `tool_used` is defined in `lib.rs` itself, so it has no prefix
+and slipped straight past. The gate was right by luck. A command defined in that
+file has to be named in `MAC_ONLY` by hand, and the test says so now; verified
+by removing the gate and watching it report line 1108.
+
 Shaking the mouse opens the control panel. **macOS only.**
 
 **The thresholds come from a recording, not a guess.** A standalone recorder

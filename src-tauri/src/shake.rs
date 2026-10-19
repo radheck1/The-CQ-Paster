@@ -21,7 +21,7 @@ use std::sync::mpsc::{self, Sender};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 /// How long a shake has to happen within.
 const WINDOW: f64 = 0.6;
@@ -327,7 +327,17 @@ pub fn start(app: &AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
         while rx.recv().is_ok() {
-            crate::diag("shake: opening the control panel");
+            // Which tool, before the window is shown rather than after, so
+            // the view switches while it is still hidden instead of the old
+            // one flashing up first.
+            let tool = crate::recent::last();
+            crate::diag(&format!(
+                "shake: opening the control panel on {}",
+                tool.map(|t| t.as_str()).unwrap_or("the tool it was last left on")
+            ));
+            if let Some(t) = tool {
+                let _ = handle.emit_to("main", "shake-opened", t.as_str());
+            }
             // Where the shake happened, not where the window was left.
             crate::show_main_at_pointer(&handle);
         }

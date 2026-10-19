@@ -904,6 +904,10 @@ function switchView(next: jotter.View) {
   }
   view = next;
   jotter.setView(next);
+  // So shake reopens on the tool you last chose. Rust cannot infer this: the
+  // remembered view in jotter.json cannot tell being shown a tool from being
+  // switched to it.
+  if (IS_MAC) void invoke("tool_used", { tool: next }).catch(() => {});
   if (next === "paster") {
     delete document.body.dataset.view;
     if (latest) renderMain(latest);
@@ -935,6 +939,13 @@ function crossFade(from: jotter.View, to: jotter.View) {
 async function startJotter() {
   await jotter.load();
   jotter.onChange(() => refreshJotterFoot());
+  // Shaken open: land on whichever tool did something most recently. Sent
+  // before the window is shown, so this switches while it is still hidden.
+  await listen<string>("shake-opened", ({ payload: tool }) => {
+    if (tool === "paster" || tool === "jotter" || tool === "shotter") {
+      switchView(tool);
+    }
+  });
   // "Open Jotter" on a reminder card: land in that folder's note.
   await listen<number>("jotter-open", ({ payload: id }) => {
     if (view !== "jotter") switchView("jotter");

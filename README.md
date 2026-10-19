@@ -117,8 +117,10 @@ Your slot hotkeys work inside a note, so ⌘+N+V pastes a slot straight in.
 
 ## Shake to open (macOS)
 
-**Shake the mouse** and the control panel opens, on whichever tool you left it
-on. It's in the menu-bar menu under **Shake to open**, where you can switch it
+**Shake the mouse** and the control panel opens, on whichever tool did
+something most recently — copy a slot and it opens on Paster, take a screenshot
+and it opens on Shotter, switch to Jotter and it opens there. Until you've used
+one, it opens on whichever tool you left it on. It's in the menu-bar menu under **Shake to open**, where you can switch it
 off or change how hard the shake has to be (high, medium or low sensitivity).
 
 Shaking while dragging does nothing, so throwing a window across the screen
