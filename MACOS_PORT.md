@@ -1080,23 +1080,70 @@ the transformation is mechanical, so there is nothing left for a model to
 decide. Deterministic scores 7/7 on the same seven cases, costs nothing, never
 refuses, and keeps the lead-in.
 
-**"Two things, eggs and bacon" is deliberately left alone.** Its items carry no
-marker, so splitting them means deleting the "and" — and deleting words is the
-thing that loses sentences.
+**A spoken list becomes a written one.** `dictate/listing.rs`, and there is a
+checkbox in the dictation window to turn it off.
 
-**Two breaks minimum, measured.** At one break it split "Alright, one more test
-to see if it's working" in half. The `("one", "more")` marker was removed for
-the same reason. An ignored test, `report_against_every_recorded_dictation`,
-runs the splitter over the whole local `dictations.log` and prints what it
-would do; that is how both were found.
+```text
+I need some things from the store. Eggs, milk, and bread.
+->
+I need some things from the store:
 
-**It fires rarely, and the reason is worth knowing.** Across 99 recorded
-dictations it fires **zero** times — no false positives, and no true ones
-either. Not because the rules are wrong but because dictating a sentence at a
-time means a list arrives as several dictations: the real log has "Okay, two
-notes. First, for the audio bars…" and "And then the blob…" as two separate
-entries. One dictation has to contain the whole list. Formatting a list spread
-across dictations is a larger feature and is not built.
+- Eggs
+- milk
+- bread
+```
+
+**The model judges; the code edits.** That division is the whole design, and it
+was arrived at the long way round.
+
+Asked to *produce* formatted text, the 7B scored **4/7**: it deleted lead-in
+sentences, reordered items and invented a "second," that had never been said.
+That was written down here as "the model cannot do this", and a pile of
+deterministic rules went in instead — counting words, ordinals, conjunction
+pairs, comma arithmetic, a verb list to tell "Eggs, milk, and bread" from
+"Traffic is bad, and I'm running late". Every rule had a case it got wrong, and
+every fix needed another rule. Four passes, three of them corrected by the user
+on real dictations.
+
+The measurement had been of the wrong thing. The model was being asked to
+**edit**, which it is bad at, when the hard part was to **decide**, which it is
+good at. Asked only "is this a list, and which spans are the items?", the same
+model scored **9/9** on the cases the rules needed special handling for, and
+**10/10** end to end once the instruction was tightened — including both
+sentences no structural rule could separate.
+
+So the model names spans and this code builds the output. Nothing the model says
+reaches the document as text.
+
+**What is checked.** Every item must be a literal substring of the input, in
+order and not overlapping. That alone proved insufficient: given "a loaf of
+bread, some milk, a dozen eggs" the model answered `bread`, `milk`, `eggs` — all
+substrings, in order, and "a loaf of" quietly gone. So the gaps are checked too:
+between one item and the next there may be punctuation and joining words and
+nothing else, and after the last item nothing but punctuation, so a list cannot
+swallow the sentence that followed it. `, some ` fails that, which is what caught
+the narrowing.
+
+`BETWEEN` is a word list, but it is only in the verifier — it decides nothing
+about what is or is not a list. That distinction is the point: a list of words
+used to make the judgement needs a new entry for every phrasing a person might
+use, and one used to check an answer only needs to cover the ways items are
+joined.
+
+**The narrowing was then fixed in the instruction**, not the guard: saying
+"nothing shortened… every word belonging to the item, including anything in
+front of it like \"a\" or \"a dozen\"" turned 9/10 into 10/10, and the three
+negatives still came back NONE. The guard refusing was a safe failure; it is
+better not to need it.
+
+**The cost is a second pass**, 300 ms to 1.9 s measured, so `worth_asking`
+declines to ask about text with no comma or semicolon in it at all. That
+pre-filter makes no judgement — it only avoids paying for a call on text no
+answer could turn into a list.
+
+**A lead-in that is a sentence fragment still takes the colon**: "Grab a loaf of
+bread, some milk, and…" becomes "Grab:" with the items beneath. Slightly terse,
+and the alternative is throwing away a word the user said.
 
 **A dictation joins what is already written, so it brings its own space.**
 Whisper hands back a sentence with nothing on either end, and dictating a
@@ -1207,6 +1254,31 @@ half the words to survive. Both failed on real speech:
 |---|---|
 | `Invented("the")` | A joining word cannot change what a sentence says. Removing a correction sometimes needs one back. |
 | `TooShort { kept: 5, had: 18 }` | Two false starts, and the model's answer — "Let's do Tuesday at 2:30." — was right. The guard destroyed it and pasted the stumbling version. |
+
+**The floor asks how much went when the question is what went.** Measured over
+604 dictations: at 66-67% of words kept sit *both* a perfect stutter removal and
+a dictation that lost "rewrite" and "comments". No threshold separates them. The
+case that made it concrete was dictated on purpose — "So, um, I think we should,
+you know, just ship it" keeps 7 of 11 words, the model returned exactly "I think
+we should just ship it", and the guard threw it away for being 64%.
+
+So `only_filler_left` is a second way to pass: when everything that went is
+filler or a correction marker, the ratio does not matter. "Here's the latest
+upload, run the task on this data" keeps 4 of 10 and lost the instruction, so it
+stays refused.
+
+It is **additional** to the floor, not a replacement, and that was measured too:
+replacing it broke 57 of 149 rewrites that work today, because the model drops
+"even", "but", "make", "also" constantly in output the guard is right to accept,
+and no hand-written list will ever cover that. As an extra way to pass, it can
+only add.
+
+Two traps found while building it. A list that *learns* itself from the accepted
+rewrites picks up "tuesday", from a self-correction — so `FILLER` is written down
+and checked by a test rather than harvested. And when nothing is missing at all,
+`all` over an empty list returns true: without a guard for that, "Do it now. Do
+it now." → "Do it now." sails past the floor, since every word of the dropped
+sentence is still present. An existing test caught it.
 
 So: joining words may be added, and the size floor depends on whether the
 speaker corrected themselves — 20% with a correction marker present, 70%
