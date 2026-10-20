@@ -1255,6 +1255,56 @@ half the words to survive. Both failed on real speech:
 | `Invented("the")` | A joining word cannot change what a sentence says. Removing a correction sometimes needs one back. |
 | `TooShort { kept: 5, had: 18 }` | Two false starts, and the model's answer — "Let's do Tuesday at 2:30." — was right. The guard destroyed it and pasted the stumbling version. |
 
+**Punctuation spoken aloud reaches the page, where the model cooperates.**
+Whisper writes what it hears, so "open parentheses, hello, close parentheses"
+arrives as those five words. The clean-up model turns that into `(hello)` on its
+own, unprompted — and the guard used to throw the result away, because four of
+five words had gone and punctuation is not a word.
+
+`spoken_punctuation` recognises those four as having *become* the marks. A word
+counts only when the mark it names appears in the output **more often than in
+the input**, which is the whole safety of it: saying "quote" and getting a
+quotation mark is a conversion, and saying it and getting nothing is two words
+deleted. `open`, `close` and `end` are allowed to go only alongside a mark that
+actually appeared, or "close the door and lock it" would licence deleting half a
+sentence.
+
+Measured against the model, what works:
+
+```text
+"open parentheses, hello, close parentheses."     -> (hello)
+"Set the flag to true, semicolon, then restart."  -> Set the flag to true; then restart.
+"The file is called sync, underscore, zendesk."   -> sync_zendesk
+"Use the accounts, dash, buy, dash, month file."  -> accounts-buy-month
+```
+
+And what does not. A parenthetical *inside* a sentence, and quotes in any form,
+come back with the markers simply deleted and no mark produced:
+
+```text
+"The query, open parentheses, the slow one, close parentheses, returns duplicates."
+   -> "The query, the slow one, returns duplicates."
+"The query, quote, returns duplicates, unquote."
+   -> "The query returns duplicates."
+```
+
+The guard refuses all of those, correctly — no mark appeared, so nothing was
+converted, and the user gets their own words back rather than a quietly mangled
+sentence. The hit rate cannot be improved by editing `INSTRUCTION`: that text
+carries the 8/8 corpus score and changing a word of it invalidates the
+measurement.
+
+**Checked against the corpus.** Of 76 refusals recorded on the author's machine,
+this flips exactly one — the `(hello)` case. The other 73 stay refused,
+including every real content loss. `report_verdicts_against_every_recorded_dictation`
+is the ignored test that says so, and it should be run after any change to the
+guard.
+
+**The guard matters more here than the feature does.** Asked to clean "The login
+page, the one I sent you, returns duplicates", the model returned "The login page
+returns duplicates" — it deleted a genuine parenthetical. No mark words are
+involved, so nothing excuses it, and it stays refused.
+
 **The floor asks how much went when the question is what went.** Measured over
 604 dictations: at 66-67% of words kept sit *both* a perfect stutter removal and
 a dictation that lost "rewrite" and "comments". No threshold separates them. The
