@@ -1,3 +1,28 @@
+/* Libron, a serif by Nico Verbruggen, under the SIL Open Font License — the
+ * licence text travels with it in public/fonts/Libron-OFL.txt, which the OFL
+ * requires. Regular and Bold only: the interface uses no italics, so the other
+ * two styles in the release are 170 KB nobody would ever see.
+ *
+ * The weights between them — the rules at 500 and 600 — resolve to Bold, which
+ * is the renderer picking the nearest of the two real weights. That is
+ * deliberate: synthesising a semibold out of a serif thickens every stroke
+ * uniformly and loses the thin/thick contrast the typeface is built on. */
+@font-face {
+  font-family: "Libron";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/Libron-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Libron";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/Libron-Bold.woff2") format("woff2");
+}
+
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;
@@ -29,6 +54,63 @@
   --toggle-bg: var(--panel-2);
   --pop-bg: var(--panel);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* macOS only, on purpose. `styles.css` is shared, and the Windows control
+ * panel and cursor popup have to render exactly as they did — a platform
+ * nobody here can run is not one to change sight-unseen. The attribute is set
+ * by the inline script at the top of index.html, before the first paint, so
+ * there is no frame of the old font.
+ *
+ * The two monospace exceptions below keep their own stacks: the vocabulary box
+ * so that `customer_id` and `created_at` stay unambiguous and aligned, and the
+ * ? glyph because it is drawn rather than read. */
+/* Every text size in one place, named for its own value so a rule still says
+ * what it is. The point of the indirection is the block below: it lets macOS
+ * take a different scale without duplicating 69 declarations, and lets Windows
+ * keep the sizes it has always had. */
+:root {
+  --fs-10-5: 10.5px;
+  --fs-11: 11px;
+  --fs-11-5: 11.5px;
+  --fs-12: 12px;
+  --fs-12-5: 12.5px;
+  --fs-13: 13px;
+  --fs-13-5: 13.5px;
+  --fs-14: 14px;
+  --fs-15: 15px;
+  --fs-16: 16px;
+  --fs-17: 17px;
+}
+
+:root[data-platform="macos"] {
+  font-family: "Libron", Georgia, ui-serif, serif;
+  /* One pixel up, everywhere. Between 6% and 9% depending on the element,
+   * which was the point — "bigger, but not by much". Windows keeps the
+   * numbers above. */
+  --fs-10-5: 11.5px;
+  --fs-11: 12px;
+  --fs-11-5: 12.5px;
+  --fs-12: 13px;
+  --fs-12-5: 13.5px;
+  --fs-13: 14px;
+  --fs-13-5: 14.5px;
+  --fs-14: 15px;
+  --fs-15: 16px;
+  --fs-16: 17px;
+  --fs-17: 18px;
+}
+
+/* Libron reads heavy in the notepad, where the text is longest and the panel
+ * is brightest. It is already Regular — there is nothing below it in this
+ * family — so the weight is not what to change.
+ *
+ * macOS renders text with subpixel antialiasing by default, which thickens
+ * strokes. Asking for grayscale antialiasing instead is the actual fix: the
+ * same glyphs, drawn thinner. Scoped to the notepad because that is where the
+ * complaint was; the same line on :root would do it everywhere. */
+body[data-view="jotter"] {
+  -webkit-font-smoothing: antialiased;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -114,7 +196,7 @@ button {
   gap: 8px;
   padding-left: 12px;
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-13);
   letter-spacing: 0.2px;
   pointer-events: none; /* let the drag region under it receive the mousedown */
 }
@@ -209,7 +291,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 9px;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   transition: border-color 0.12s ease;
 }
@@ -266,7 +348,7 @@ button {
   gap: 6px;
   padding: 6px 7px;
   border-radius: 7px;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   color: var(--text);
   cursor: pointer;
   /* Tall enough to hold the hover action buttons, which are taller than the
@@ -318,7 +400,7 @@ button {
 .fr-count {
   position: absolute;
   right: 0;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--empty);
 }
 
@@ -375,7 +457,7 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 
 .fr-yes,
@@ -386,7 +468,7 @@ button {
   border: 1px solid var(--line);
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
 }
 
 .fr-yes {
@@ -406,7 +488,7 @@ button {
   border-radius: 6px;
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   outline: none;
 }
 
@@ -421,7 +503,7 @@ button {
   border-top: 1px solid var(--line);
   background: transparent;
   color: var(--accent);
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
 }
 
 .folder-new:hover:not(.editing) {
@@ -456,7 +538,7 @@ button {
 .info-q {
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-weight: 700;
-  font-size: 17px;
+  font-size: var(--fs-17);
   line-height: 1;
   user-select: none;
 }
@@ -472,7 +554,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 11px 13px;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   line-height: 1.5;
   color: var(--muted);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
@@ -489,7 +571,7 @@ button {
 
 .brand {
   font-weight: 700;
-  font-size: 16px;
+  font-size: var(--fs-16);
   letter-spacing: 0.2px;
   display: flex;
   align-items: center;
@@ -519,7 +601,7 @@ button {
   color: var(--muted);
   padding: 5px 14px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   transition: color 0.22s ease;
 }
 
@@ -553,7 +635,7 @@ button {
 
 .hint {
   margin: 0 0 14px;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   line-height: 1.5;
   color: var(--muted);
   background: var(--panel);
@@ -605,7 +687,7 @@ button {
   background: var(--copied-bg);
   color: var(--accent);
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-13);
 }
 
 .slot.copied .s-copied {
@@ -636,7 +718,7 @@ button {
   display: grid;
   place-items: center;
   font-weight: 700;
-  font-size: 14px;
+  font-size: var(--fs-14);
   color: var(--text);
 }
 
@@ -646,7 +728,7 @@ button {
 }
 
 .s-desc {
-  font-size: 13px;
+  font-size: var(--fs-13);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -704,7 +786,7 @@ button {
 }
 
 .s-kind {
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--muted);
   margin-top: 2px;
   text-transform: capitalize;
@@ -714,7 +796,7 @@ button {
   border: none;
   background: transparent;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-14);
   padding: 4px 6px;
   border-radius: 6px;
 }
@@ -740,7 +822,7 @@ button {
   flex: 1 1 auto;
   min-width: 0;
   text-align: right;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--empty);
 }
 
@@ -750,7 +832,7 @@ button {
   color: var(--muted);
   padding: 6px 12px;
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   white-space: nowrap;
   flex: 0 0 auto;
 }
@@ -804,7 +886,7 @@ button {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 700;
   color: var(--text);
   padding: 8px 12px 6px;
@@ -826,7 +908,7 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 600;
   color: var(--muted);
 }
@@ -864,7 +946,7 @@ button {
   gap: 8px;
   padding: 5px 6px;
   border-radius: 7px;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   color: var(--text);
 }
 
@@ -878,7 +960,7 @@ button {
   display: grid;
   place-items: center;
   font-weight: 700;
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--text);
 }
 
@@ -905,7 +987,7 @@ button {
 .popup-chev {
   flex: none;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 700;
   line-height: 1;
 }
@@ -918,7 +1000,7 @@ button {
 }
 
 .popup-foot {
-  font-size: 10.5px;
+  font-size: var(--fs-10-5);
   color: var(--muted);
   padding: 6px 12px 9px;
   border-top: 1px solid var(--line);
@@ -1000,7 +1082,7 @@ button {
 .titlebar .mode {
   color: #aeb4c2;
   padding: 3px 12px;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   font-weight: 500;
   cursor: default;
 }
@@ -1062,7 +1144,7 @@ body[data-view="jotter"] #app {
   /* Fills the scroller, so a click below the last line still lands in the note. */
   min-height: 100%;
   outline: none;
-  font-size: 15px;
+  font-size: var(--fs-15);
   line-height: 22px; /* LINE_HEIGHT */
   color: var(--text);
   white-space: pre-wrap;
@@ -1149,7 +1231,7 @@ body[data-view="jotter"] #app {
   position: absolute;
   top: 9px; /* .j-scroll padding-top + LINE_PAD_TOP */
   left: 32px;
-  font-size: 15px;
+  font-size: var(--fs-15);
   line-height: 22px;
   color: var(--empty);
   pointer-events: none;
@@ -1213,7 +1295,7 @@ body[data-view="jotter"] #app {
   border: 1px solid var(--line);
   border-radius: 10px;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   color: var(--text);
 }
 
@@ -1230,12 +1312,12 @@ body[data-view="jotter"] #app {
 }
 
 .rem-title {
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 700;
 }
 
 .rem-sub {
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1328,7 +1410,7 @@ body[data-view="jotter"] #app {
   border-radius: 6px;
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
 }
 
 .rem-field select,
@@ -1347,7 +1429,7 @@ body[data-view="jotter"] #app {
 
 .rem-hint {
   margin: -2px 0 0 50px;
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   color: var(--muted);
 }
 
@@ -1365,7 +1447,7 @@ body[data-view="jotter"] #app {
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 600;
 }
 
@@ -1387,7 +1469,7 @@ body[data-view="jotter"] #app {
 }
 
 .rem-next {
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   color: var(--muted);
 }
 
@@ -1396,7 +1478,7 @@ body[data-view="jotter"] #app {
   background: transparent;
   border: none;
   color: var(--accent);
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   white-space: nowrap;
 }
 
@@ -1437,7 +1519,7 @@ body[data-window="reminder"] {
   align-items: center;
   gap: 7px;
   margin-bottom: 8px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 700;
 }
 
@@ -1449,7 +1531,7 @@ body[data-window="reminder"] {
 
 .rcard-time {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 600;
   color: var(--muted);
 }
@@ -1465,7 +1547,7 @@ body[data-window="reminder"] {
   align-items: center;
   gap: 5px;
   margin-bottom: 3px;
-  font-size: 11px;
+  font-size: var(--fs-11);
   font-weight: 700;
   color: var(--muted);
 }
@@ -1485,7 +1567,7 @@ body[data-window="reminder"] {
   align-items: flex-start;
   gap: 8px;
   padding: 2px 0;
-  font-size: 13px;
+  font-size: var(--fs-13);
   line-height: 19px;
 }
 
@@ -1522,7 +1604,7 @@ body[data-window="reminder"] {
 .rcard-empty {
   margin-top: 2px;
   padding-left: 15px;
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   color: var(--muted);
 }
 
@@ -1539,7 +1621,7 @@ body[data-window="reminder"] {
   border: 1px solid var(--line);
   border-radius: 7px;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-12);
   white-space: nowrap;
 }
 
@@ -1603,7 +1685,7 @@ body[data-window="markup"] {
 }
 
 .shot-count {
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--text);
   padding: 6px 2px;
@@ -1676,7 +1758,7 @@ body[data-window="markup"] {
   place-items: center;
   background: var(--shot-gradient);
   color: #fff;
-  font-size: 14px;
+  font-size: var(--fs-14);
   font-weight: 600;
   opacity: 0;
   transition: opacity 0.18s ease;
@@ -1691,7 +1773,7 @@ body[data-window="markup"] {
   display: flex;
   align-items: center;
   margin: 6px 2px 0;
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   color: var(--muted);
 }
 
@@ -1791,13 +1873,13 @@ body[data-window="markup"] {
   align-items: center;
   gap: 8px;
   text-align: center;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   line-height: 1.5;
   color: var(--muted);
 }
 
 .shot-empty b {
-  font-size: 13.5px;
+  font-size: var(--fs-13-5);
   color: var(--text);
 }
 
@@ -1906,7 +1988,7 @@ body[data-window="markup"] #app {
 }
 
 .mk-status {
-  font-size: 12px;
+  font-size: var(--fs-12);
   color: var(--danger);
   white-space: nowrap;
 }
@@ -1915,7 +1997,7 @@ body[data-window="markup"] #app {
   border: none;
   border-radius: 8px;
   padding: 7px 18px;
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   color: #fff;
   background: var(--shot-gradient);
@@ -1973,7 +2055,7 @@ body[data-window="dictate"] #app {
 
 .dc-lede {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   line-height: 1.45;
   color: var(--muted);
 }
@@ -1993,13 +2075,13 @@ body[data-window="dictate"] #app {
 }
 
 .dc-name {
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 600;
   color: var(--text);
 }
 
 .dc-state {
-  font-size: 13px;
+  font-size: var(--fs-13);
   font-weight: 700;
   color: var(--accent);
 }
@@ -2049,7 +2131,7 @@ body[data-window="dictate"] #app {
 
 .dc-detail {
   margin-top: 6px;
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -2072,7 +2154,7 @@ body[data-window="dictate"] #app {
   border-radius: 7px;
   background: var(--panel);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   font-weight: 600;
   cursor: pointer;
 }
@@ -2093,7 +2175,7 @@ body[data-window="dictate"] #app {
 
 .dc-foot {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-11);
   line-height: 1.4;
   color: var(--empty);
 }
@@ -2116,7 +2198,7 @@ body[data-window="dictate"] #app {
 }
 
 .dc-try-hint {
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--empty);
   line-height: 1.3;
 }
@@ -2133,7 +2215,7 @@ body[data-window="dictate"] #app {
   padding: 8px 10px;
   border-radius: 7px;
   background: var(--panel-2);
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.45;
   color: var(--text);
   max-height: 96px;
@@ -2233,7 +2315,7 @@ body[data-window="listening"] #app {
 }
 
 .dc-mic-label {
-  font-size: 12.5px;
+  font-size: var(--fs-12-5);
   font-weight: 600;
   color: var(--text);
   flex: 0 0 auto;
@@ -2248,14 +2330,14 @@ body[data-window="listening"] #app {
   border-radius: 6px;
   background: var(--panel);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-12);
 }
 
 .dc-mic-lock {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   color: var(--muted);
   cursor: pointer;
 }
@@ -2269,7 +2351,7 @@ body[data-window="listening"] #app {
 
 .dc-sub {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-11);
   line-height: 1.4;
   color: var(--danger);
 }
@@ -2298,14 +2380,14 @@ body[data-window="listening"] #app {
   border-radius: 6px;
   background: var(--panel);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1.5;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .dc-vocab-note {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-11);
   color: var(--empty);
 }
 
@@ -2380,7 +2462,7 @@ body[data-window="listening"] #app {
   border: 0;
   background: none;
   color: var(--accent);
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   cursor: pointer;
   text-decoration: underline;
 }
@@ -2400,11 +2482,11 @@ body[data-window="listening"] #app {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
 }
 
 .dc-sugg code {
-  font-size: 11.5px;
+  font-size: var(--fs-11-5);
   color: var(--text);
 }
 
@@ -2412,7 +2494,7 @@ body[data-window="listening"] #app {
   flex: 1;
   min-width: 0;
   color: var(--empty);
-  font-size: 10.5px;
+  font-size: var(--fs-10-5);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2427,7 +2509,7 @@ body[data-window="listening"] #app {
   border-radius: 5px;
   background: var(--panel);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-12);
   line-height: 1;
   cursor: pointer;
 }
