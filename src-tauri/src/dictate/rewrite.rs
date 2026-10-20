@@ -160,6 +160,20 @@ const INSERTABLE: &[&str] = &[
 const CORRECTION_MARKERS: &[&str] =
     &["no", "wait", "actually", "sorry", "mean", "nevermind", "scratch", "rather"];
 
+/// Words the instruction already licenses the model to delete, so losing them
+/// is the feature working rather than a sentence going missing.
+///
+/// Measured against 604 real dictations: this is what the model actually drops
+/// in the rewrites the guard already accepts. It is deliberately not learned
+/// from them at runtime — the same measurement found "tuesday" among the
+/// commonly dropped words, from a self-correction, and a list that quietly
+/// learns to discard weekdays is worse than one written down.
+const FILLER: &[&str] = &[
+    "um", "umm", "uh", "uhh", "er", "ah", "like", "you", "know", "so", "well", "basically",
+    "really", "kind", "sort", "mean", "okay", "ok", "right", "yeah", "literally", "anyway",
+    "just",
+];
+
 /// How much may go when the speaker corrected themselves.
 const MIN_KEPT_CORRECTED: f64 = 0.2;
 /// How much may go when they did not. Only filler should be leaving.
@@ -190,6 +204,44 @@ fn distinctive(sentence: &str, whole: &[String]) -> Vec<String> {
         .into_iter()
         .filter(|w| whole.iter().filter(|x| *x == w).count() == 1)
         .collect()
+}
+
+/// Is everything that left either filler or a correction marker?
+///
+/// The size floor asks *how much* went when the question is *what* went, and on
+/// real speech the two come apart. Measured over 604 dictations: at 66-67% of
+/// words kept sit both a perfect stutter removal and a dictation that lost
+/// "rewrite" and "comments". No threshold separates them, because the ratio
+/// cannot see the difference between a word and a word that mattered.
+///
+/// This can. "So, um, I think we should, you know, just ship it" keeps 7 of 11
+/// words — under the floor, and refused for two months — while everything it
+/// lost was filler. "Here's the latest upload, run the task on this data" keeps
+/// 4 of 10 and lost the instruction, so it stays refused.
+///
+/// A word still present somewhere in the output was not lost, which is the same
+/// reasoning `distinctive` uses: a stutter drops a repeat, not a word.
+///
+/// Deliberately *additional* to the floor rather than a replacement. Replacing
+/// it was measured too, and broke 57 of 149 rewrites that work today — the
+/// model drops "even", "but", "make", "also" all the time in output the guard
+/// is right to accept, and no hand-written list of filler will ever cover that.
+/// As an extra way to pass it cannot take anything away.
+fn only_filler_left(transcript: &str, rewritten: &str) -> bool {
+    let out = content_words(rewritten);
+    let gone: Vec<String> = content_words(transcript)
+        .into_iter()
+        .filter(|w| !out.contains(w))
+        .collect();
+    // Nothing missing means the only thing that went was repetition — a whole
+    // duplicated sentence leaves every one of its words still present. That is
+    // not a filler removal and this must not vouch for it; the floor decides.
+    // Found by an existing test: without this, `all` on an empty list returns
+    // true and "Do it now. Do it now." -> "Do it now." sails past.
+    !gone.is_empty()
+        && gone
+            .iter()
+            .all(|w| FILLER.contains(&w.as_str()) || CORRECTION_MARKERS.contains(&w.as_str()))
 }
 
 /// Did every sentence leave a trace?
@@ -255,7 +307,7 @@ pub fn check(transcript: &str, rewritten: &str) -> Result<(), Refused> {
     } else {
         MIN_KEPT_PLAIN
     };
-    if (kept as f64) < floor * total as f64 {
+    if (kept as f64) < floor * total as f64 && !only_filler_left(transcript, rewritten) {
         return Err(Refused::TooShort { kept, had: total });
     }
     // The floor above is blind to losing one sentence out of several, and once
@@ -398,9 +450,24 @@ pub fn prewarm() {
     });
 }
 
+/// Ask the engine something other than the clean-up.
+///
+/// Exposed for the list judge, which is a second pass with its own instruction
+/// and its own check. `INSTRUCTION` keeps its own call path below, untouched:
+/// its 8/8 corpus score belongs to that text exactly as written, and the point
+/// of a parameter here is that nothing about this reaches it.
+pub fn ask_with(instruction: &str, text: &str, n_predict: u32) -> Result<String, String> {
+    let port = ensure_running_within(READY_GRACE)?;
+    ask_at(port, instruction, text, n_predict)
+}
+
 fn ask(port: u16, text: &str, n_predict: u32) -> Result<String, String> {
+    ask_at(port, INSTRUCTION, text, n_predict)
+}
+
+fn ask_at(port: u16, instruction: &str, text: &str, n_predict: u32) -> Result<String, String> {
     let body = serde_json::json!({
-        "prompt": chatml(INSTRUCTION, text),
+        "prompt": chatml(instruction, text),
         "n_predict": n_predict,
         "temperature": 0,
         // The instruction is identical every time, so the server re-evaluates
@@ -757,5 +824,102 @@ mod tests {
         assert_eq!(a[h + 1], "127.0.0.1");
         let n = a.iter().position(|x| x == "-ngl").unwrap();
         assert_eq!(a[n + 1], "99");
+    }
+
+    /// Every case here is a real dictation from the log, with what the model
+    /// really returned. The first one was refused for months.
+    #[test]
+    fn filler_may_go_however_much_of_the_sentence_it_was() {
+        // 7 of 11 words — 64%, under the 70% floor — and all that left was
+        // "so", "um", "you know".
+        assert_eq!(
+            check(
+                "So, um, I think we should, you know, just ship it.",
+                "I think we should just ship it."
+            ),
+            Ok(())
+        );
+        // A stutter drops repeats, not words.
+        assert_eq!(
+            check(
+                "So the colors would just, the letters would just be those, those three \
+                 colors as like the soft blend or whatever?",
+                "So the letters would just be those three colors as a soft blend or whatever?"
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn repetition_going_is_not_a_filler_removal() {
+        // Every word of the dropped sentence is still there, so nothing reads
+        // as "missing" — but half the dictation went and no correction
+        // explains it. The floor has to stay in charge of this one.
+        assert!(!only_filler_left("Do it now. Do it now.", "Do it now."));
+        assert!(matches!(
+            check("Do it now. Do it now.", "Do it now."),
+            Err(Refused::TooShort { .. })
+        ));
+    }
+
+    #[test]
+    fn content_may_not_go_at_any_ratio() {
+        // All four lost something that mattered, and all four must stay
+        // refused however the floor is set.
+        assert!(check(
+            "Here's the latest upload, run the task on this data.",
+            "Here's the latest upload."
+        )
+        .is_err(), "lost the instruction");
+        assert!(check(
+            "Can you rewrite the current query that you just outputted to me and can you \
+             simplify your comments?",
+            "Can you simplify the current query you just outputted to me?"
+        )
+        .is_err(), "lost 'rewrite' and 'comments'");
+        assert!(check(
+            "I do have access to linear and I am able to get in. I'm not in any group or \
+             anything though and I haven't used it much at all.",
+            "I do have access to linear and I am able to get in. I haven't used it much at all."
+        )
+        .is_err(), "lost 'not in any group'");
+        assert!(check(
+            "I get the following error when trying to run step four. Just give me a copyable \
+             block.",
+            "Just give me a copyable block."
+        )
+        .is_err(), "lost the error report");
+    }
+
+    #[test]
+    fn a_swapped_pronoun_is_still_caught() {
+        // The guard counts words rather than checking membership, so reusing a
+        // word from elsewhere does not launder it. "you" appears once in the
+        // input and three times in the output.
+        assert!(matches!(
+            check(
+                "You are aware of the Notion page in which things are assigned to me and how \
+                 me and Jake will work.",
+                "You are aware of the Notion page where things are assigned to you and how you \
+                 and Jake will work."
+            ),
+            Err(Refused::Invented(_))
+        ));
+    }
+
+    #[test]
+    fn the_filler_list_holds_no_word_that_carries_meaning() {
+        // A list that quietly learned itself from the corpus picked up
+        // "tuesday" from a self-correction. These are checked by eye for that
+        // reason, and this is the check.
+        for w in FILLER {
+            assert!(
+                w.len() <= 9 && !w.chars().any(|c| c.is_ascii_digit()),
+                "{w} does not look like filler"
+            );
+        }
+        assert!(!FILLER.contains(&"not"), "removing 'not' inverts the sentence");
+        assert!(!FILLER.contains(&"me"), "pronouns change who does the work");
+        assert!(!FILLER.contains(&"tuesday"));
     }
 }

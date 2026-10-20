@@ -117,6 +117,13 @@ Your slot hotkeys work inside a note, so ⌘+N+V pastes a slot straight in.
 
 ## Shake to open (macOS)
 
+Say a list out loud — "I need some things from the store. Eggs, milk, and
+bread." — and it arrives as a written one: the sentence introducing it ends in a
+colon and each item gets its own bullet. Counting them off works too, and the
+"first, second, third" doesn't come along. It's judged sentence by sentence
+rather than by keywords, so "traffic is bad, and I'm running late" stays a
+sentence.
+
 **Shake the mouse** and the control panel opens, on whichever tool did
 something most recently — copy a slot and it opens on Paster, take a screenshot
 and it opens on Shotter, switch to Jotter and it opens there. Until you've used
