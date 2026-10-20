@@ -174,6 +174,89 @@ const FILLER: &[&str] = &[
     "just",
 ];
 
+/// Words that name a punctuation mark, and the mark they name.
+///
+/// Whisper writes what it hears, so "open parentheses, hello, close
+/// parentheses" arrives as those five words. The clean-up model turns it into
+/// `(hello)` on its own — measured, unprompted — and the guard then threw the
+/// result away, because four of five words had gone and punctuation is not a
+/// word. This is how those four are recognised as having become the marks
+/// rather than having been lost.
+///
+/// The opening mark stands for the pair: finding `(` is enough to believe
+/// "parentheses" became punctuation.
+const SPOKEN_MARKS: &[(&str, char)] = &[
+    ("parenthesis", '('),
+    ("parentheses", '('),
+    ("paren", '('),
+    ("parens", '('),
+    ("bracket", '['),
+    ("brackets", '['),
+    ("brace", '{'),
+    ("braces", '{'),
+    ("quote", '"'),
+    ("quotes", '"'),
+    ("unquote", '"'),
+    ("quotation", '"'),
+    ("apostrophe", '\''),
+    ("comma", ','),
+    ("colon", ':'),
+    ("semicolon", ';'),
+    ("period", '.'),
+    ("dash", '-'),
+    ("hyphen", '-'),
+    ("underscore", '_'),
+    ("asterisk", '*'),
+    ("slash", '/'),
+    ("backslash", '\\'),
+    ("ampersand", '&'),
+    ("percent", '%'),
+    ("plus", '+'),
+    ("equals", '='),
+    ("hashtag", '#'),
+    ("hash", '#'),
+    ("tilde", '~'),
+    ("caret", '^'),
+    ("pipe", '|'),
+];
+
+/// Words that come with a spoken mark: "**open** parenthesis", "**end**
+/// quote".
+///
+/// Allowed to go only when a mark actually appeared. On their own they are
+/// ordinary words — "close the door" must not become licence to delete.
+const MARK_COMPANIONS: &[&str] = &["open", "close", "end", "begin", "start"];
+
+/// How many of the words that went were punctuation being spoken aloud.
+///
+/// A word counts only if the mark it names appears in the output **more often
+/// than it did in the input**. That is the whole safety of this: saying
+/// "quote" and getting no quotation mark is a deletion, and saying it and
+/// getting one is a conversion. Measured on all three real dictations —
+/// `(hello)` passes, "quote … unquote" with the markers merely dropped does
+/// not, and a genuine parenthetical the model deleted does not either.
+fn spoken_punctuation(gone: &[String], transcript: &str, rewritten: &str) -> usize {
+    let more_of = |mark: char| {
+        rewritten.matches(mark).count() > transcript.matches(mark).count()
+    };
+    let converted: usize = gone
+        .iter()
+        .filter(|w| {
+            SPOKEN_MARKS
+                .iter()
+                .any(|(name, mark)| name == &w.as_str() && more_of(*mark))
+        })
+        .count();
+    if converted == 0 {
+        return 0;
+    }
+    let companions = gone
+        .iter()
+        .filter(|w| MARK_COMPANIONS.contains(&w.as_str()))
+        .count();
+    converted + companions
+}
+
 /// How much may go when the speaker corrected themselves.
 const MIN_KEPT_CORRECTED: f64 = 0.2;
 /// How much may go when they did not. Only filler should be leaving.
@@ -307,7 +390,9 @@ pub fn check(transcript: &str, rewritten: &str) -> Result<(), Refused> {
     } else {
         MIN_KEPT_PLAIN
     };
-    if (kept as f64) < floor * total as f64 && !only_filler_left(transcript, rewritten) {
+    // A word that became a punctuation mark did not go missing.
+    let effective = kept + spoken_punctuation(&had, transcript, rewritten);
+    if (effective as f64) < floor * total as f64 && !only_filler_left(transcript, rewritten) {
         return Err(Refused::TooShort { kept, had: total });
     }
     // The floor above is blind to losing one sentence out of several, and once
@@ -921,5 +1006,130 @@ mod tests {
         assert!(!FILLER.contains(&"not"), "removing 'not' inverts the sentence");
         assert!(!FILLER.contains(&"me"), "pronouns change who does the work");
         assert!(!FILLER.contains(&"tuesday"));
+    }
+
+    /// All three dictated for this, with what the real model returned.
+    #[test]
+    fn spoken_parentheses_may_become_parentheses() {
+        // The model does this unprompted. One word of five survives as a
+        // word, and the other four became the marks.
+        assert_eq!(
+            check("open parentheses, hello, close parentheses.", "(hello)"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn markers_dropped_without_a_mark_appearing_is_still_a_deletion() {
+        // The whole safety of the rule. Saying "quote" and getting a
+        // quotation mark is a conversion; saying it and getting nothing is
+        // just two words gone, which is what the model actually did here.
+        assert!(check(
+            "The query, quote, returns duplicates, unquote.",
+            "The query returns duplicates."
+        )
+        .is_err());
+        // With the marks present it is the conversion it claims to be.
+        assert_eq!(
+            check(
+                "The query, quote, returns duplicates, unquote.",
+                "The query \"returns duplicates\"."
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_real_parenthetical_may_not_be_deleted() {
+        // No mark words anywhere, so nothing here is a conversion — and the
+        // model did delete this, which is why the guard matters more than the
+        // feature does.
+        assert!(check(
+            "The login page, the one I sent you, returns duplicates.",
+            "The login page returns duplicates."
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn close_is_only_droppable_beside_a_mark() {
+        // "open" and "close" are ordinary words. Without a mark appearing
+        // they buy nothing, or "close the door and lock it" would licence
+        // deleting half a sentence.
+        assert_eq!(
+            spoken_punctuation(
+                &["close".to_string(), "door".to_string()],
+                "close the door, and lock it.",
+                "lock it."
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn a_mark_already_in_the_transcript_proves_nothing() {
+        // Whisper sometimes writes the mark itself. Only *more* of it in the
+        // output means a word turned into one.
+        assert_eq!(
+            spoken_punctuation(&["quote".to_string()], "he said \"go\", quote.", "he said \"go\"."),
+            0
+        );
+    }
+
+    #[test]
+    fn every_spoken_mark_names_itself_once() {
+        // A typo here would silently licence deleting a word, so the table is
+        // checked rather than trusted.
+        for (name, mark) in SPOKEN_MARKS {
+            assert!(!name.is_empty() && name.chars().all(|c| c.is_lowercase()), "{name}");
+            assert!(!mark.is_alphanumeric(), "{name} -> {mark} is not punctuation");
+        }
+        for w in MARK_COMPANIONS {
+            assert!(
+                !SPOKEN_MARKS.iter().any(|(n, _)| n == w),
+                "{w} cannot be both a mark and a companion"
+            );
+        }
+    }
+
+    /// Runs the guard over every dictation this machine has recorded and
+    /// reports anything whose verdict the spoken-mark rule changed.
+    ///
+    /// Ignored by default: it reads a file that only exists on a machine that
+    /// has dictated, and prints what was said into it.
+    #[test]
+    #[ignore = "reads the local dictation log; run it by hand after touching the guard"]
+    fn report_verdicts_against_every_recorded_dictation() {
+        let path = crate::data_dir().join("dictations.log");
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            eprintln!("no dictation log at {}", path.display());
+            return;
+        };
+        let (mut seen, mut flipped, mut still) = (0, 0, 0);
+        for line in body.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let heard = v.get("heard").and_then(|h| h.as_str()).unwrap_or("");
+            let Some(cleaned) = v.get("cleaned").and_then(|c| c.as_str()) else {
+                continue;
+            };
+            let was_refused = v.get("note").and_then(|n| n.as_str()).is_some();
+            if !was_refused {
+                continue;
+            }
+            seen += 1;
+            match check(heard, cleaned) {
+                Ok(()) => {
+                    flipped += 1;
+                    eprintln!("--- now ACCEPTED (was refused: {})",
+                        v.get("note").and_then(|n| n.as_str()).unwrap_or("?"));
+                    eprintln!("    heard : {heard}");
+                    eprintln!("    model : {cleaned}");
+                }
+                Err(_) => still += 1,
+            }
+        }
+        eprintln!("\n==== of {seen} refusals: {flipped} now accepted, {still} still refused ====");
     }
 }
